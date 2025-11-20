@@ -47,7 +47,7 @@ bronze_pssql_alllogs_nometrics
     FirstSeen = min(EventProcessedUtcTime),
     LastSeen = max(EventProcessedUtcTime),
     TablesAccessed = make_set(TableName, 10),  // Lista de tablas accedidas
-    SampleQueries = make_list(QueryText, 3),   // Primeras 3 queries (ordenadas)
+    SampleQueries = make_set(QueryText, 3),   // Primeras 3 queries (cambio: make_set en lugar de make_list)
     User = any(User),
     Database = any(Database),
     SourceHost = any(SourceHost)
@@ -97,7 +97,7 @@ bronze_pssql_alllogs_nometrics
     TablesAffected = make_set(TableAffected),
     FirstOccurrence = min(EventProcessedUtcTime),
     LastOccurrence = max(EventProcessedUtcTime),
-    SampleMessages = take_any(QueryText, 3),
+    SampleMessages = make_set(QueryText, 3),  // Cambio: make_set en lugar de take_any
     User = any(User),
     Database = any(Database),
     SourceHost = any(SourceHost)
@@ -160,7 +160,7 @@ bronze_pssql_alllogs_nometrics
     ErrorCodes = make_set(sqlerrcode),
     FirstError = min(EventProcessedUtcTime),
     LastError = max(EventProcessedUtcTime),
-    SampleErrors = take_any(message, 3),
+    SampleErrors = make_set(message, 3),  // Cambio: make_set en lugar de take_any
     User = any(FinalUser),
     Database = any(FinalDatabase),
     SourceHost = any(FinalHost)

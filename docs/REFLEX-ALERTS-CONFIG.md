@@ -1,20 +1,45 @@
 # ⚙️ Configuración de Alertas en Data Activator (Reflex)
 
-**Versión**: 2.0 (Validada 20/11/2025)  
-**Estado**: ✅ Queries validadas con datos reales  
-**Fuente de queries**: `kql-queries-PRODUCTION.kql`
+**Versión**: 3.0 (Validada 20/11/2025)  
+**Estado**: ✅ Queries completas y listas para usar  
+**Fuente de queries**: `ALERTAS-QUERIES-ESPECIFICAS.md` (queries completas) + `kql-queries-PRODUCTION.kql` (queries de dashboard)
 
-> ⚠️ **IMPORTANTE**: Las alertas ahora incluyen User/Database/Host mediante correlación.  
+> 📌 **NUEVO**: Ver **`ALERTAS-QUERIES-ESPECIFICAS.md`** para queries completas listas para copiar/pegar en Data Activator.  
+> Este documento contiene la guía de configuración paso a paso.
+
+> ⚠️ **IMPORTANTE**: Las alertas incluyen User/Database/Host mediante correlación.  
 > Requiere extensión `pgaudit` instalada en cada base de datos: `CREATE EXTENSION pgaudit;`
 
 ## 📋 Prerequisitos
 - Dashboard Real-Time creado
 - Workspace con Data Activator habilitado
 - Permisos de Contributor en el Workspace
-- Queries validadas de `kql-queries-PRODUCTION.kql` (líneas 1-612)
+- **Ver `ALERTAS-QUERIES-ESPECIFICAS.md` para queries completas y específicas**
 - **Extensión pgaudit instalada en todas las bases de datos de usuario**
 - `azure.extensions` debe incluir `PGAUDIT` en la allowlist
 - `shared_preload_libraries` debe incluir `pgaudit`
+
+---
+
+## 🚀 QUICK START - Configuración Rápida
+
+### Opción 1: Usar Queries Listas (RECOMENDADO)
+
+1. **Abre el archivo**: `ALERTAS-QUERIES-ESPECIFICAS.md`
+2. **Copia la query completa** de la alerta que quieres configurar
+3. **En Data Activator**: Get data → KQL Database → Pega la query
+4. **Configura el trigger** según las instrucciones específicas
+5. **Listo!** La alerta está configurada
+
+**Ventajas**:
+- Queries completas y listas para copiar/pegar
+- Sin necesidad de modificar código
+- Instrucciones específicas para cada alerta
+- Ejemplos de tests incluidos
+
+### Opción 2: Configuración Manual (Avanzado)
+
+Sigue los pasos detallados en las secciones siguientes de este documento.
 
 ---
 
@@ -51,27 +76,42 @@
 
 ## 🚨 ALERTA 1: Extracción Masiva de Datos
 
-### Configuración
+> 📌 **Query Completa**: Ver `ALERTAS-QUERIES-ESPECIFICAS.md` → Sección "ALERTA 1"
+
+### Resumen
 
 ```yaml
 Name: Alert_DataExfiltration
-Description: Detecta patrones de lectura masiva (SELECT, COPY, pg_dump) que sugieren exfiltración
-Type: Automatic
-Source Query: kql-queries-PRODUCTION.kql (líneas 12-65)
+Descripción: Detecta >15 operaciones SELECT en 5 minutos desde la misma sesión
+Threshold: SelectCount > 15
+Ventana: 5 minutos
+Evaluación: Cada 1 minuto
+Severidad: Critical
+Query Completa: Ver ALERTAS-QUERIES-ESPECIFICAS.md
 ```
 
-### Query de Detección (VALIDADA)
+### Configuración Resumida
 
-Ver `kql-queries-PRODUCTION.kql` líneas 1-78 para la query completa con todos los comentarios.
+1. **Crear Reflex Item**: `Alert_DataExfiltration`
+2. **Get Data → KQL Database**
+3. **Pegar query completa** de `ALERTAS-QUERIES-ESPECIFICAS.md` (Alerta 1)
+4. **Configurar Trigger**:
+   - Condition: `SelectCount > 15`
+   - Evaluate: Every 1 minute
+   - Suppress: 5 minutes
+5. **Configurar Actions** (Email/Teams) según templates en documento específico
 
-**Resumen de la lógica**:
-- **Construye tabla `sessionInfo`** con correlación User/Database/Host desde CONNECTION logs (24h lookback)
-- **FILTRO**: Solo `backend_type == "client backend"` (excluye workers internos como pg_qs_background_worker)
-- Detecta > 15 SELECTs en ventana de 5 minutos por sesión (processId)
-- Identifica queries COPY o pg_dump
-- **Extrae TablesAccessed y SampleQueries** directamente de logs AUDIT (fallback cuando User = UNKNOWN)
-- **Enriquece con User/Database/SourceHost** mediante join con sessionInfo
-- Genera alerta con detalles de sesión, usuario, servidor, tablas accedidas y queries ejecutadas
+### Query de Detección (Referencia)
+
+**⚠️ NO copiar desde aquí. Usar query completa de `ALERTAS-QUERIES-ESPECIFICAS.md`**
+
+La query completa incluye:
+- Construcción de `sessionInfo` (correlación User/Database/Host)
+- Detección de actividad SELECT masiva (>15 en 5 min)
+- Filtro `backend_type == "client backend"` (solo usuarios reales)
+- Enriquecimiento con User/Database/SourceHost
+- Extracción de TablesAccessed y SampleQueries
+- Formateo de output para alertas
 
 ### Trigger Conditions
 
@@ -197,27 +237,42 @@ Parameters:
 
 ## ⚠️ ALERTA 2: Operaciones Destructivas Masivas
 
-### Configuración
+> 📌 **Query Completa**: Ver `ALERTAS-QUERIES-ESPECIFICAS.md` → Sección "ALERTA 2"
+
+### Resumen
 
 ```yaml
 Name: Alert_MassDestructiveOps
-Description: Detecta DELETE, UPDATE, TRUNCATE, DROP masivos que puedan comprometer datos
-Type: Automatic
-Source Query: kql-queries-PRODUCTION.kql (líneas 71-114)
+Descripción: Detecta >5 operaciones destructivas (DELETE/UPDATE/TRUNCATE/DROP) en 2 minutos
+Threshold: OperationCount > 5
+Ventana: 2 minutos
+Evaluación: Cada 2 minutos
+Severidad: High
+Query Completa: Ver ALERTAS-QUERIES-ESPECIFICAS.md
 ```
 
-### Query de Detección (VALIDADA)
+### Configuración Resumida
 
-Ver `kql-queries-PRODUCTION.kql` líneas 80-128 para la query completa.
+1. **Crear Reflex Item**: `Alert_MassDestructiveOps`
+2. **Get Data → KQL Database**
+3. **Pegar query completa** de `ALERTAS-QUERIES-ESPECIFICAS.md` (Alerta 2)
+4. **Configurar Trigger**:
+   - Condition: `OperationCount > 5`
+   - Evaluate: Every 2 minutes
+   - Suppress: 10 minutes
+5. **Configurar Actions** (Email/Teams) según templates en documento específico
 
-**Resumen de la lógica**:
-- **Usa tabla `sessionInfo`** para correlación User/Database/Host (24h lookback)
-- Detecta > 5 operaciones destructivas (DELETE/UPDATE/TRUNCATE/DROP) en ventanas de 2 minutos
-- Agrupa por servidor, backend_type y ventana temporal `bin(EventProcessedUtcTime, 2m)`
-- **Enriquece con User/Database/SourceHost** mediante join con sessionInfo
-- Identifica tablas afectadas y tipos de operación
-- Extrae queries ejecutadas con `take_any(QueryText, 3)`
-- Genera alerta con usuario responsable y muestras de queries ejecutadas
+### Query de Detección (Referencia)
+
+**⚠️ NO copiar desde aquí. Usar query completa de `ALERTAS-QUERIES-ESPECIFICAS.md`**
+
+La query completa incluye:
+- Construcción de `sessionInfo` (correlación User/Database/Host)
+- Detección de operaciones destructivas (>5 en 2 min)
+- Agrupación por ventanas de 2 minutos `bin(EventProcessedUtcTime, 2m)`
+- Filtro `backend_type == "client backend"` (solo usuarios reales)
+- Enriquecimiento con User/Database/SourceHost
+- Extracción de TablesAffected y SampleQueries
 
 ### Trigger Conditions
 
@@ -305,29 +360,43 @@ Message: |
 
 ## 🔴 ALERTA 3: Escalada de Errores Críticos
 
-### Configuración
+> 📌 **Query Completa**: Ver `ALERTAS-QUERIES-ESPECIFICAS.md` → Sección "ALERTA 3"
+
+### Resumen
 
 ```yaml
 Name: Alert_ErrorSpike
-Description: Pico de errores (autenticación, permisos, conexión) que sugiere ataque o fallo grave
-Type: Automatic
-Source Query: kql-queries-PRODUCTION.kql (líneas 120-137)
+Descripción: Detecta >15 errores críticos (ERROR/FATAL/PANIC) en 1 minuto
+Threshold: ErrorCount > 15
+Ventana: 1 minuto
+Evaluación: Cada 1 minuto
+Severidad: Critical
+Query Completa: Ver ALERTAS-QUERIES-ESPECIFICAS.md
 ```
 
-### Query de Detección (VALIDADA)
+### Configuración Resumida
 
-Ver `kql-queries-PRODUCTION.kql` líneas 130-180 para la query completa.
+1. **Crear Reflex Item**: `Alert_ErrorSpike`
+2. **Get Data → KQL Database**
+3. **Pegar query completa** de `ALERTAS-QUERIES-ESPECIFICAS.md` (Alerta 3)
+4. **Configurar Trigger**:
+   - Condition: `ErrorCount > 15`
+   - Evaluate: Every 1 minute
+   - Suppress: 5 minutes
+   - **Filter de Alta Prioridad**: `ErrorTypes contains "Authentication Failure" AND ErrorCount > 10`
+5. **Configurar Actions** (Email/Teams/Power Automate) según templates en documento específico
 
-**Resumen de la lógica**:
-- **Usa tabla `sessionInfo`** para correlación User/Database/Host (24h lookback)
-- **Extracción dual de usuario**: DirectUser desde mensajes de error + correlación via sessionInfo (más robusto)
-- **Extracción dual de database**: DirectDatabase + correlación sessionInfo
-- **Extracción dual de host**: DirectHost + correlación sessionInfo
-- Detecta > 15 errores (ERROR/FATAL/PANIC) por minuto por servidor (ventana `bin(1m)`)
-- Categoriza errores: Authentication, Permission, Connection, Resource, Operator Intervention, Other
-- Identifica códigos SQL de error más frecuentes (sqlerrcode)
-- **Enriquece con FinalUser/FinalDatabase/FinalHost** (prioriza extracción directa sobre correlación)
-- Genera alerta con distribución de tipos de error, usuario afectado, códigos y ejemplos
+### Query de Detección (Referencia)
+
+**⚠️ NO copiar desde aquí. Usar query completa de `ALERTAS-QUERIES-ESPECIFICAS.md`**
+
+La query completa incluye:
+- Construcción de `sessionInfo` (correlación User/Database/Host)
+- Detección de errores críticos (>15 por minuto)
+- **Extracción dual**: DirectUser/DirectDatabase/DirectHost desde mensajes + correlación sessionInfo
+- Categorización de errores (Authentication, Permission, Connection, Resources)
+- Agrupación por ventanas de 1 minuto `bin(EventProcessedUtcTime, 1m)`
+- Enriquecimiento con FinalUser/FinalDatabase/FinalHost (prioriza extracción directa)
 
 ### Trigger Conditions
 

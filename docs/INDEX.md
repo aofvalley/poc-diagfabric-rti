@@ -1,8 +1,8 @@
 # 📚 Índice de Archivos - PostgreSQL Anomaly Detection Solution
 
-**Versión**: 1.0 - Validado 20/11/2025  
-**Total archivos**: 11 (8 documentación + 3 queries KQL)  
-**Total líneas**: ~5,000+ líneas de código y documentación
+**Versión**: 2.0 - Actualizado 20/11/2025  
+**Total archivos**: 12 (9 documentación + 3 queries KQL)  
+**Total líneas**: ~6,200+ líneas de código y documentación
 
 ---
 
@@ -11,7 +11,8 @@
 ### Para Usuarios Nuevos
 1. **`QUICKSTART.md`** (⚡ 5 min) → Configuración básica en 5 minutos
 2. **`README.md`** (📖 10 min) → Visión general y arquitectura
-3. **`DEPLOYMENT-CHECKLIST.md`** (✅ 30-45 min) → Despliegue completo paso a paso
+3. **`ALERTAS-QUERIES-ESPECIFICAS.md`** (📋 15 min) → **NUEVO**: Queries listas para alertas
+4. **`DEPLOYMENT-CHECKLIST.md`** (✅ 30-45 min) → Despliegue completo paso a paso
 
 ### Para Management/Executive
 1. **`EXECUTIVE-SUMMARY.md`** (📊 10 min) → KPIs, costos, ROI, métricas de éxito
@@ -19,9 +20,10 @@
 
 ### Para Implementación Técnica
 1. **`kql-validation-queries.kql`** (🧪 5 min) → Ejecutar TEST 1 para validar
-2. **`kql-queries-PRODUCTION.kql`** (⭐ Copiar/pegar) → Queries validadas
-3. **`DASHBOARD-SETUP-GUIDE.md`** (🎨 15-20 min) → Crear dashboard
-4. **`REFLEX-ALERTS-CONFIG.md`** (🔔 10-15 min) → Configurar alertas
+2. **`ALERTAS-QUERIES-ESPECIFICAS.md`** (⭐ **NUEVO** - COPIAR DESDE AQUÍ) → Queries completas para alertas
+3. **`kql-queries-PRODUCTION.kql`** (📊 Copiar para dashboard) → Queries de dashboard validadas
+4. **`DASHBOARD-SETUP-GUIDE.md`** (🎨 15-20 min) → Crear dashboard
+5. **`REFLEX-ALERTS-CONFIG.md`** (🔔 10-15 min) → Guía de configuración de alertas
 
 ---
 
@@ -40,9 +42,10 @@
 ### ✅ Guías de Despliegue
 | Archivo | Líneas | Descripción | Tiempo Ejecución |
 |---------|--------|-------------|------------------|
+| **ALERTAS-QUERIES-ESPECIFICAS.md** ⭐ **NUEVO** | 1,200+ | **Queries completas listas para copiar/pegar en Data Activator** con instrucciones paso a paso | 5-10 min por alerta |
 | **DEPLOYMENT-CHECKLIST.md** | 600+ | Checklist completo en 5 fases (validación, queries, dashboard, alertas, testing) | 30-45 min |
 | **DASHBOARD-SETUP-GUIDE.md** | 1,200+ | Guía detallada dashboard (6-8 tiles, auto-refresh, optimizaciones) | 15-20 min setup + 1-2h optimizaciones |
-| **REFLEX-ALERTS-CONFIG.md** | 800+ | Configuración alertas Reflex (3 alertas críticas + templates) | 10-15 min básico + 30 min avanzado |
+| **REFLEX-ALERTS-CONFIG.md** | 1,000+ | Guía de configuración alertas Reflex (referencia al nuevo documento de queries específicas) | 10-15 min básico + 30 min avanzado |
 
 ---
 
@@ -71,9 +74,14 @@ QUICKSTART.md → kql-validation-queries.kql (TEST 1) → kql-queries-PRODUCTION
 README.md (arquitectura) → DEPLOYMENT-CHECKLIST.md (Fase 3) → DASHBOARD-SETUP-GUIDE.md → kql-queries-PRODUCTION.kql (tiles)
 ```
 
-### Tarea: "Necesito configurar alertas"
+### Tarea: "Necesito configurar alertas RÁPIDO"
 ```
-REFLEX-ALERTS-CONFIG.md → kql-queries-PRODUCTION.kql (anomalías) → DEPLOYMENT-CHECKLIST.md (Fase 4)
+ALERTAS-QUERIES-ESPECIFICAS.md → Copiar query completa → Pegar en Data Activator → Listo!
+```
+
+### Tarea: "Necesito configurar alertas (guía completa)"
+```
+ALERTAS-QUERIES-ESPECIFICAS.md (queries) → REFLEX-ALERTS-CONFIG.md (configuración avanzada) → DEPLOYMENT-CHECKLIST.md (Fase 4)
 ```
 
 ### Tarea: "Necesito presentar a management"
@@ -130,6 +138,59 @@ DEPLOYMENT-CHECKLIST.md (sección Troubleshooting) → DASHBOARD-SETUP-GUIDE.md 
 - KPIs y métricas de éxito (Q1-Q4 2025)
 
 **Cuándo usar**: Presentación a management, justificación de proyecto, presupuesto
+
+---
+
+### **ALERTAS-QUERIES-ESPECIFICAS.md** (⭐ **NUEVO** - Queries Listas para Alertas)
+**Sección 1: Prerequisites** (páginas 1-2)
+- Verificación de extensión pgaudit
+- Configuración de server parameters
+- Query de validación de logs AUDIT
+
+**Sección 2: ALERTA 1 - Data Exfiltration** (páginas 3-15)
+- **Query completa lista para copiar/pegar** (incluye sessionInfo, detección, enrichment, threshold)
+- Configuración paso a paso en Data Activator (6 pasos detallados)
+- Configuración de Trigger conditions
+- Templates de Email/Teams con placeholders específicos
+- Test de la alerta con comandos SQL
+
+**Sección 3: ALERTA 2 - Mass Destructive Operations** (páginas 16-28)
+- **Query completa independiente** (lista para copiar/pegar)
+- Configuración en Data Activator (5 pasos)
+- Templates de notificaciones
+- Test con comandos SQL
+
+**Sección 4: ALERTA 3 - Critical Error Spike** (páginas 29-43)
+- **Query completa con extracción dual** (DirectUser + sessionInfo correlation)
+- Configuración en Data Activator (7 pasos, incluye Power Automate)
+- Templates avanzados de Email/Teams
+- Acción automática de auto-blocking (opcional)
+- Test con bash script
+
+**Sección 5: ALERTA BONUS - Baseline Deviation** (páginas 44-48)
+- **Query completa** con cálculo de baseline
+- Configuración simplificada
+- Template de notificación
+
+**Sección 6: Troubleshooting de Alertas** (páginas 49-55)
+- Diagnóstico paso a paso con queries de test
+- Soluciones específicas para cada problema
+- Optimización de queries lentas
+
+**Sección 7: Checklist Final de Implementación** (páginas 56-58)
+- Checklist completo (prerequisitos, alertas, destinatarios, filtros, tests, documentación)
+- Tabla resumen de todas las alertas
+
+**VENTAJAS DEL NUEVO DOCUMENTO**:
+- ✅ Queries **independientes** y **completas** (incluyen todo el código necesario)
+- ✅ **No requiere** abrir múltiples archivos
+- ✅ **Copiar/pegar directo** en Data Activator sin modificaciones
+- ✅ **Instrucciones específicas** para cada alerta (no genéricas)
+- ✅ **Templates de email/Teams** con placeholders exactos
+- ✅ **Tests incluidos** para cada alerta
+- ✅ **Troubleshooting específico** para problemas de alertas
+
+**Cuándo usar**: **SIEMPRE** que vayas a configurar alertas en Data Activator. Reemplaza el uso de `kql-queries-PRODUCTION.kql` para alertas.
 
 ---
 
@@ -367,8 +428,9 @@ Ejemplo de whitelisting de IPs. **NO APLICABLE** porque PostgreSQL Flexible Serv
 | EXECUTIVE-SUMMARY.md | ✅ Completo | 20/11/2025 | Incluye KPIs y ROI |
 | DEPLOYMENT-CHECKLIST.md | ✅ Completo | 20/11/2025 | 5 fases + troubleshooting |
 | DASHBOARD-SETUP-GUIDE.md | ✅ Completo | Previo | 53 páginas detalladas |
-| REFLEX-ALERTS-CONFIG.md | ✅ Completo | Previo | 3 alertas + templates |
-| kql-queries-PRODUCTION.kql | ✅ **PRODUCCIÓN** | 20/11/2025 | Queries validadas con TEST 1 |
+| REFLEX-ALERTS-CONFIG.md | ✅ Completo | 20/11/2025 | Guía de configuración (usa ALERTAS-QUERIES-ESPECIFICAS.md) |
+| **ALERTAS-QUERIES-ESPECIFICAS.md** | ✅ **NUEVO** | 20/11/2025 | **Queries completas listas para Data Activator** |
+| kql-queries-PRODUCTION.kql | ✅ **PRODUCCIÓN** | 20/11/2025 | Queries validadas para dashboard |
 | kql-validation-queries.kql | ✅ **VALIDADO** | 20/11/2025 | TEST 1 ejecutado exitosamente |
 | kql-queries-anomalies-FIXED.kql | ⚠️ Superseded | - | Usar PRODUCTION.kql |
 | kql-queries-anomalies.kql | ❌ Deprecated | - | NO usar |
@@ -382,7 +444,13 @@ Ejemplo de whitelisting de IPs. **NO APLICABLE** porque PostgreSQL Flexible Serv
 R: Ejecuta `QUICKSTART.md` (5 min) → Luego `DEPLOYMENT-CHECKLIST.md` (30 min)
 
 **P: ¿Qué archivo tiene las queries finales validadas?**  
-R: `kql-queries-PRODUCTION.kql` (454 líneas, 100% validado)
+R: Para **Dashboard**: `kql-queries-PRODUCTION.kql` | Para **Alertas**: `ALERTAS-QUERIES-ESPECIFICAS.md` (⭐ **NUEVO**)
+
+**P: ¿Cómo configuro alertas en Data Activator?**  
+R: Abre `ALERTAS-QUERIES-ESPECIFICAS.md` → Copia query completa de la alerta que quieres → Pega en Data Activator → Sigue los 5-7 pasos específicos
+
+**P: ¿Puedo copiar queries de alertas desde `kql-queries-PRODUCTION.kql`?**  
+R: NO recomendado. Las queries en PRODUCTION.kql están optimizadas para dashboard. Para alertas, usa `ALERTAS-QUERIES-ESPECIFICAS.md` que tiene queries completas e independientes.
 
 **P: ¿Cómo sé si mis datos están llegando correctamente?**  
 R: Ejecuta TEST 1 de `kql-validation-queries.kql` → Debes ver `AuditOperation`, `AuditStatement`, `QueryText` poblados
@@ -423,12 +491,15 @@ R: 30-45 min (`DEPLOYMENT-CHECKLIST.md` Fases 1-5)
 
 1. ✅ **Ahora**: Ejecutar `QUICKSTART.md` (5 min)
 2. ✅ **Hoy**: Completar `DEPLOYMENT-CHECKLIST.md` Fases 1-3 (20 min)
-3. ✅ **Esta semana**: Completar Fases 4-5 + monitorizar 48h
-4. ⏳ **Próxima semana**: Implementar optimizaciones de `DASHBOARD-SETUP-GUIDE.md`
-5. ⏳ **Mes 1**: Fine-tuning de alertas según baseline real
+3. ✅ **Hoy (Alertas)**: Configurar primera alerta usando `ALERTAS-QUERIES-ESPECIFICAS.md` (5-10 min)
+4. ✅ **Esta semana**: Completar todas las alertas + monitorizar 48h
+5. ⏳ **Próxima semana**: Implementar optimizaciones de `DASHBOARD-SETUP-GUIDE.md`
+6. ⏳ **Mes 1**: Fine-tuning de alertas según baseline real
 
 ---
 
 **🎉 ¡Documentación completa lista para uso en producción!**
 
-Total: 11 archivos, ~5,000 líneas, 100% validado con datos reales.
+Total: 12 archivos, ~6,200 líneas, 100% validado con datos reales.
+
+**⭐ DESTACADO**: Nuevo documento `ALERTAS-QUERIES-ESPECIFICAS.md` con queries completas listas para copiar/pegar en Data Activator.
