@@ -38,19 +38,33 @@ bronze_pssql_alllogs_nometrics
     AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
     TableName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
     QueryText = trim('"', extract(@",,,([^<]+)<", 1, message)),
-    ProcessSession = strcat(LogicalServerName, "-", processId)
+    ProcessSession = strcat(LogicalServerName, "-", processId),
+    // Extracción directa del mensaje AUDIT (algunos logs incluyen user/database/host)
+    DirectUser = extract(@"user=([^\s,]+)", 1, message),
+    DirectDatabase = extract(@"database=([^\s,]+)", 1, message),
+    DirectHost = extract(@"host=([^\s]+)", 1, message)
 | where AuditOperation == "READ" or AuditStatement == "SELECT"
 // Correlación con sessionInfo para obtener User/Database/Host
 | join kind=leftouter sessionInfo on processId, LogicalServerName
+| extend
+    // Priorizar extracción directa, luego sessionInfo, finalmente "UNKNOWN"
+    FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN")),
+    FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, iff(isnotempty(Database), Database, "UNKNOWN")),
+    FinalHost = iff(isnotempty(DirectHost), DirectHost, iff(isnotempty(SourceHost), SourceHost, "UNKNOWN"))
+| extend
+    // Priorizar extracción directa, luego sessionInfo, finalmente "UNKNOWN"
+    FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN")),
+    FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, iff(isnotempty(Database), Database, "UNKNOWN")),
+    FinalHost = iff(isnotempty(DirectHost), DirectHost, iff(isnotempty(SourceHost), SourceHost, "UNKNOWN"))
 | summarize 
     SelectCount = count(),
     FirstSeen = min(EventProcessedUtcTime),
     LastSeen = max(EventProcessedUtcTime),
     TablesAccessed = make_set(TableName, 10),  // Lista de tablas accedidas
     SampleQueries = make_set(QueryText, 3),   // Primeras 3 queries (cambio: make_set en lugar de make_list)
-    User = any(User),
-    Database = any(Database),
-    SourceHost = any(SourceHost)
+    User = any(FinalUser),
+    Database = any(FinalDatabase),
+    SourceHost = any(FinalHost)
     by ProcessSession, LogicalServerName, backend_type, processId
 | where SelectCount > 15  // Threshold ajustado: >15 SELECTs en 5 minutos
 | extend AnomalyType = "Potential Data Exfiltration"
@@ -58,9 +72,9 @@ bronze_pssql_alllogs_nometrics
     TimeGenerated = LastSeen,
     AnomalyType,
     ServerName = LogicalServerName,
-    User = iff(isempty(User), "UNKNOWN", User),
-    Database = iff(isempty(Database), "UNKNOWN", Database),
-    SourceHost = iff(isempty(SourceHost), "UNKNOWN", SourceHost),
+    User,
+    Database,
+    SourceHost,
     BackendType = backend_type,
     ProcessID = processId,
     SelectCount,
@@ -85,12 +99,21 @@ bronze_pssql_alllogs_nometrics
     AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
     AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
     TableAffected = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
-    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message))
+    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message)),
+    // Extracción directa del mensaje AUDIT (algunos logs incluyen user/database/host)
+    DirectUser = extract(@"user=([^\s,]+)", 1, message),
+    DirectDatabase = extract(@"database=([^\s,]+)", 1, message),
+    DirectHost = extract(@"host=([^\s]+)", 1, message)
 | where AuditStatement in ("DELETE", "UPDATE", "TRUNCATE", "DROP") 
     or QueryText contains "DROP TABLE" 
     or QueryText contains "DROP DATABASE"
 // Correlación con sessionInfo para obtener User/Database/Host
 | join kind=leftouter sessionInfo on processId, LogicalServerName
+| extend
+    // Priorizar extracción directa, luego sessionInfo, finalmente "UNKNOWN"
+    FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN")),
+    FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, iff(isnotempty(Database), Database, "UNKNOWN")),
+    FinalHost = iff(isnotempty(DirectHost), DirectHost, iff(isnotempty(SourceHost), SourceHost, "UNKNOWN"))
 | summarize 
     OperationCount = count(),
     Operations = make_set(AuditStatement),
@@ -98,9 +121,9 @@ bronze_pssql_alllogs_nometrics
     FirstOccurrence = min(EventProcessedUtcTime),
     LastOccurrence = max(EventProcessedUtcTime),
     SampleMessages = make_set(QueryText, 3),  // Cambio: make_set en lugar de take_any
-    User = any(User),
-    Database = any(Database),
-    SourceHost = any(SourceHost)
+    User = any(FinalUser),
+    Database = any(FinalDatabase),
+    SourceHost = any(FinalHost)
     by LogicalServerName, backend_type, bin(EventProcessedUtcTime, 2m)
 | where OperationCount > 5  // Más de 5 operaciones destructivas en 2 minutos
 | where backend_type == "client backend"  // FILTRAR workers DESPUÉS del threshold
@@ -109,9 +132,9 @@ bronze_pssql_alllogs_nometrics
     TimeGenerated = LastOccurrence,
     AnomalyType,
     ServerName = LogicalServerName,
-    User = iff(isempty(User), "UNKNOWN", User),
-    Database = iff(isempty(Database), "UNKNOWN", Database),
-    SourceHost = iff(isempty(SourceHost), "UNKNOWN", SourceHost),
+    User,
+    Database,
+    SourceHost,
     BackendType = backend_type,
     OperationCount,
     Operations,
@@ -171,9 +194,9 @@ bronze_pssql_alllogs_nometrics
     TimeGenerated = LastError,
     AnomalyType,
     ServerName = LogicalServerName,
-    User = iff(isempty(User), "UNKNOWN", User),
-    Database = iff(isempty(Database), "UNKNOWN", Database),
-    SourceHost = iff(isempty(SourceHost), "UNKNOWN", SourceHost),
+    User,
+    Database,
+    SourceHost,
     BackendType = backend_type,
     ErrorCount,
     ErrorTypes,

@@ -1,0 +1,238 @@
+// ============================================================================
+// SETUP: ML Anomaly Detection para PostgreSQL Monitoring
+// ============================================================================
+// Este script crea la infraestructura necesaria para usar Anomaly Detector
+// en Fabric Real-Time Intelligence
+// ============================================================================
+
+// ============================================================================
+// PASO 1: Crear tabla de métricas agregadas (destino)
+// ============================================================================
+// Esta tabla almacena métricas cada 5 minutos para alimentar el ML
+
+.create table postgres_activity_metrics (
+    Timestamp: datetime,
+    ServerName: string,
+    ActivityCount: long,
+    AuditLogs: long,
+    Errors: long,
+    Connections: long
+)
+
+
+// ============================================================================
+// PASO 2: Crear función de agregación (transformación)
+// ============================================================================
+// Esta función toma los logs raw y los agrega cada 5 minutos
+
+.create-or-alter function postgres_activity_metrics_transform() {
+    bronze_pssql_alllogs_nometrics
+    | where category == "PostgreSQLLogs"
+    | summarize 
+        ActivityCount = count(),
+        AuditLogs = countif(message contains "AUDIT:"),
+        Errors = countif(errorLevel in ("ERROR", "FATAL", "PANIC")),
+        Connections = countif(message contains "connection authorized")
+        by ServerName = LogicalServerName, Timestamp = bin(EventProcessedUtcTime, 5m)
+    | project Timestamp, ServerName, ActivityCount, AuditLogs, Errors, Connections
+}
+
+
+// ============================================================================
+// PASO 3: Crear Update Policy (pipeline automático)
+// ============================================================================
+// Cada vez que llegan datos nuevos a bronze_pssql_alllogs_nometrics,
+// se ejecuta automáticamente la función y actualiza postgres_activity_metrics
+
+.alter table postgres_activity_metrics policy update 
+@'[{"IsEnabled": true, "Source": "bronze_pssql_alllogs_nometrics", "Query": "postgres_activity_metrics_transform()", "IsTransactional": false, "PropagateIngestionProperties": false}]'
+
+
+// ============================================================================
+// PASO 4: Popular tabla con datos históricos (30 días para entrenamiento)
+// ============================================================================
+// El ML necesita histórico para aprender el baseline normal
+// SOLO ejecutar UNA VEZ después de crear la tabla
+
+.set-or-append postgres_activity_metrics <|
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(30d)
+    | where category == "PostgreSQLLogs"
+    | summarize 
+        ActivityCount = count(),
+        AuditLogs = countif(message contains "AUDIT:"),
+        Errors = countif(errorLevel in ("ERROR", "FATAL", "PANIC")),
+        Connections = countif(message contains "connection authorized")
+        by ServerName = LogicalServerName, Timestamp = bin(EventProcessedUtcTime, 5m)
+    | project Timestamp, ServerName, ActivityCount, AuditLogs, Errors, Connections
+
+
+// ============================================================================
+// PASO 5: Verificar que la tabla se está actualizando
+// ============================================================================
+
+// Ver últimos registros
+postgres_activity_metrics
+| order by Timestamp desc
+| take 20;
+
+// Ver estadísticas por servidor
+postgres_activity_metrics
+| where Timestamp >= ago(24h)
+| summarize 
+    Records = count(),
+    AvgActivity = avg(ActivityCount),
+    MaxActivity = max(ActivityCount),
+    AvgErrors = avg(Errors)
+    by ServerName;
+
+
+// ============================================================================
+// PASO 6: Configurar Anomaly Detector en Fabric UI
+// ============================================================================
+// Ahora ve a Fabric Real-Time Intelligence:
+//
+// 1. Abre tu KQL Database
+// 2. Click en la tabla "postgres_activity_metrics"
+// 3. Click en "Anomaly detection" (botón superior)
+// 4. Configurar:
+//    - Table: postgres_activity_metrics
+//    - Timestamp column: Timestamp
+//    - Value to watch: ActivityCount
+//    - Group by dimension: ServerName
+//    - Sensitivity: Medium (ajustar después)
+//    - Lookback period: 7 days
+// 5. Click "Create"
+// 6. Espera 5-10 minutos para que entrene el modelo
+//
+// ============================================================================
+
+
+// ============================================================================
+// OPCIONAL: Crear más tablas para otras métricas
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// Métrica 2: Errores por Servidor
+// ----------------------------------------------------------------------------
+
+.create table postgres_error_metrics (
+    Timestamp: datetime,
+    ServerName: string,
+    ErrorRate: long,
+    ErrorTypes: string
+)
+
+.create-or-alter function postgres_error_metrics_transform() {
+    bronze_pssql_alllogs_nometrics
+    | where category == "PostgreSQLLogs"
+    | where errorLevel in ("ERROR", "FATAL", "PANIC") or (sqlerrcode != "00000" and sqlerrcode != "")
+    | extend ErrorCategory = case(
+        message contains "authentication" or message contains "password", "Authentication",
+        message contains "permission denied", "Permission",
+        message contains "connection", "Connection",
+        "Other"
+    )
+    | summarize 
+        ErrorRate = count(),
+        ErrorTypes = strcat_array(make_set(ErrorCategory), ", ")
+        by ServerName = LogicalServerName, Timestamp = bin(EventProcessedUtcTime, 1m)
+    | project Timestamp, ServerName, ErrorRate, ErrorTypes
+}
+
+.alter table postgres_error_metrics policy update 
+@'[{"IsEnabled": true, "Source": "bronze_pssql_alllogs_nometrics", "Query": "postgres_error_metrics_transform()", "IsTransactional": false, "PropagateIngestionProperties": false}]'
+
+// Popular con histórico
+.set-or-append postgres_error_metrics <|
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(30d)
+    | where category == "PostgreSQLLogs"
+    | where errorLevel in ("ERROR", "FATAL", "PANIC") or (sqlerrcode != "00000" and sqlerrcode != "")
+    | extend ErrorCategory = case(
+        message contains "authentication" or message contains "password", "Authentication",
+        message contains "permission denied", "Permission",
+        message contains "connection", "Connection",
+        "Other"
+    )
+    | summarize 
+        ErrorRate = count(),
+        ErrorTypes = strcat_array(make_set(ErrorCategory), ", ")
+        by ServerName = LogicalServerName, Timestamp = bin(EventProcessedUtcTime, 1m)
+    | project Timestamp, ServerName, ErrorRate, ErrorTypes;
+
+
+// ----------------------------------------------------------------------------
+// Métrica 3: Actividad por Usuario
+// ----------------------------------------------------------------------------
+
+.create table postgres_user_metrics (
+    Timestamp: datetime,
+    UserName: string,
+    ServerName: string,
+    QueryCount: long,
+    SelectQueries: long,
+    DestructiveOps: long
+)
+
+.create-or-alter function postgres_user_metrics_transform() {
+    let sessionInfo = 
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(24h)
+    | where message contains "connection authorized" or message contains "connection received"
+    | extend UserName = extract(@"user=([^\s,]+)", 1, message)
+    | where isnotempty(UserName)
+    | summarize User = any(UserName) by processId, LogicalServerName;
+    
+    bronze_pssql_alllogs_nometrics
+    | where category == "PostgreSQLLogs"
+    | where message contains "AUDIT:"
+    | join kind=leftouter sessionInfo on processId, LogicalServerName
+    | where isnotempty(User)
+    | extend
+        IsSelect = message has_any ("SELECT", "COPY"),
+        IsDestructive = message has_any ("DELETE", "UPDATE", "TRUNCATE", "DROP")
+    | summarize 
+        QueryCount = count(),
+        SelectQueries = countif(IsSelect),
+        DestructiveOps = countif(IsDestructive)
+        by UserName = User, ServerName = LogicalServerName, Timestamp = bin(EventProcessedUtcTime, 1h)
+    | project Timestamp, UserName, ServerName, QueryCount, SelectQueries, DestructiveOps
+}
+
+.alter table postgres_user_metrics policy update 
+@'[{"IsEnabled": true, "Source": "bronze_pssql_alllogs_nometrics", "Query": "postgres_user_metrics_transform()", "IsTransactional": false, "PropagateIngestionProperties": false}]'
+
+// Popular con histórico (últimos 7 días, no 30, para no sobrecargar)
+.set-or-append postgres_user_metrics <|
+    postgres_user_metrics_transform()
+    | where Timestamp >= ago(7d);
+
+
+// ============================================================================
+// TROUBLESHOOTING
+// ============================================================================
+
+// Ver si la Update Policy está funcionando
+.show table postgres_activity_metrics policy update
+
+// Ver errores de ingesta (si la tabla no se actualiza)
+.show ingestion failures
+| where Table == "postgres_activity_metrics"
+| order by FailedOn desc
+| take 20;
+
+// Forzar refresh manual (si es necesario)
+.refresh table postgres_activity_metrics
+
+
+// ============================================================================
+// CLEANUP (si quieres empezar de cero)
+// ============================================================================
+
+// .drop table postgres_activity_metrics ifexists
+// .drop table postgres_error_metrics ifexists
+// .drop table postgres_user_metrics ifexists
+// .drop function postgres_activity_metrics_transform ifexists
+// .drop function postgres_error_metrics_transform ifexists
+// .drop function postgres_user_metrics_transform ifexists
