@@ -1,0 +1,291 @@
+// ============================================================================
+// QUERIES DE VALIDACIÓN Y TESTING - PostgreSQL AUDIT Logs
+// ============================================================================
+// Usa estas queries para verificar que la extracción funciona correctamente
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// TEST 1: Ver ejemplos de AUDIT logs con extracción de campos
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where message contains "AUDIT:"
+| take 20
+| extend 
+    AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    // Tabla viene después de STATEMENT (puede estar vacía)
+    TableName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
+    // Query está entre las últimas comas antes de <not logged>, puede estar entre comillas
+    QueryText = extract(@",,,([^<]+)<", 1, message)
+| extend QueryText = trim('"', QueryText)  // Quitar comillas del query
+| project 
+    EventProcessedUtcTime,
+    backend_type,
+    AuditOperation,      // Debe ser: READ, WRITE, MISC, etc.
+    AuditStatement,      // Debe ser: SELECT, UPDATE, DELETE, SET, DISCARD ALL, etc.
+    TableName,           // Puede estar vacío (,,,)
+    QueryText,           // El query real
+    OriginalMessage = message
+| order by EventProcessedUtcTime desc
+
+
+// ----------------------------------------------------------------------------
+// TEST 2: Ver solo SELECTs extraídos
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:"
+| where message contains "SELECT"
+| extend 
+    AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    TableName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]+),", 1, message),
+    QueryText = extract(@"AUDIT: SESSION,[^,]+,[^,]+,[^,]+,[^,]+,[^,]*,[^,]*,[^,]*,([^,<]+)", 1, message)
+| project 
+    EventProcessedUtcTime,
+    AuditOperation,
+    AuditStatement,
+    TableName,
+    QueryText = substring(QueryText, 0, 100)
+| order by EventProcessedUtcTime desc
+| take 30
+
+
+// ----------------------------------------------------------------------------
+// TEST 3: Ver operaciones destructivas (UPDATE, DELETE, etc.)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(6h)
+| where message contains "AUDIT:"
+| where message has_any ("UPDATE", "DELETE", "TRUNCATE", "DROP")
+| extend 
+    AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    TableName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]+),", 1, message),
+    QueryText = extract(@"AUDIT: SESSION,[^,]+,[^,]+,[^,]+,[^,]+,[^,]*,[^,]*,[^,]*,([^,<]+)", 1, message)
+| project 
+    EventProcessedUtcTime,
+    AuditOperation,
+    AuditStatement,
+    TableName,
+    QueryText
+| order by EventProcessedUtcTime desc
+| take 30
+
+
+// ----------------------------------------------------------------------------
+// TEST 4: Contar operaciones por tipo
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:"
+| extend AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message)
+| where isnotempty(AuditStatement)
+| summarize Count = count() by AuditStatement
+| order by Count desc
+
+
+// ----------------------------------------------------------------------------
+// TEST 5: Ver tablas accedidas (excluyendo vacías)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(6h)
+| where message contains "AUDIT:"
+| extend TableName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]+),", 1, message)
+| where isnotempty(TableName) and TableName != ""
+| summarize Count = count() by TableName
+| order by Count desc
+| take 20
+
+
+// ----------------------------------------------------------------------------
+// TEST 6: Ver accesos a tablas del sistema (pg_catalog, information_schema)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:"
+| extend QueryText = extract(@"AUDIT: SESSION,[^,]+,[^,]+,[^,]+,[^,]+,[^,]*,[^,]*,[^,]*,([^,<]+)", 1, message)
+| where QueryText contains "pg_catalog" 
+    or QueryText contains "information_schema"
+    or QueryText contains "pg_database"
+    or QueryText contains "pg_stat"
+| extend AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message)
+| project 
+    EventProcessedUtcTime,
+    AuditStatement,
+    QueryText = substring(QueryText, 0, 150)
+| order by EventProcessedUtcTime desc
+| take 30
+
+
+// ----------------------------------------------------------------------------
+// TEST 7: Simular detección de anomalía (muchos SELECTs por proceso)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(15m)
+| where message contains "AUDIT:"
+| where message contains "SELECT"
+| extend 
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    ProcessSession = strcat(LogicalServerName, "-", processId)
+| where AuditStatement == "SELECT"
+| summarize 
+    SelectCount = count(),
+    FirstSeen = min(EventProcessedUtcTime),
+    LastSeen = max(EventProcessedUtcTime)
+    by ProcessSession, backend_type
+| where SelectCount > 5  // Más de 5 SELECTs en 15 minutos
+| order by SelectCount desc
+
+
+// ----------------------------------------------------------------------------
+// TEST 8: Ver distribución de backend_type con AUDIT
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:"
+| summarize 
+    TotalAuditLogs = count(),
+    UniqueProcesses = dcount(processId)
+    by backend_type
+| order by TotalAuditLogs desc
+
+
+// ----------------------------------------------------------------------------
+// TEST 9: Verificar formato completo del mensaje
+// ----------------------------------------------------------------------------
+// Este te ayuda a ver si hay variaciones en el formato
+
+bronze_pssql_alllogs_nometrics
+| where message contains "AUDIT:"
+| take 10
+| extend MessageParts = split(message, ",")
+| project 
+    EventProcessedUtcTime,
+    Part0 = MessageParts[0],  // Debería contener "AUDIT: SESSION"
+    Part1 = MessageParts[1],  // Número
+    Part2 = MessageParts[2],  // Número
+    Part3 = MessageParts[3],  // OPERATION (READ, WRITE, MISC)
+    Part4 = MessageParts[4],  // STATEMENT (SELECT, UPDATE, etc.)
+    Part5 = MessageParts[5],  // Tabla (puede estar vacío)
+    Part6 = MessageParts[6],  // Vacío
+    Part7 = MessageParts[7],  // Vacío
+    Part8 = MessageParts[8],  // Query
+    FullMessage = message
+
+
+// ============================================================================
+// QUERIES SIMPLIFICADAS PARA DASHBOARD (Si las anteriores no funcionan)
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// ALTERNATIVA 1: Detectar muchos SELECTs sin extraer tabla
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(5m)
+| where message contains "AUDIT:"
+| where message contains "SELECT"
+| extend ProcessSession = strcat(LogicalServerName, "-", processId)
+| summarize 
+    SelectCount = count(),
+    FirstSeen = min(EventProcessedUtcTime),
+    LastSeen = max(EventProcessedUtcTime),
+    SampleMessages = take_any(message, 2)
+    by ProcessSession, backend_type, bin(EventProcessedUtcTime, 1m)
+| where SelectCount > 10
+| extend AnomalyType = "High SELECT Activity"
+| project 
+    TimeGenerated = LastSeen,
+    AnomalyType,
+    ProcessSession,
+    backend_type,
+    SelectCount,
+    TimeWindow = strcat(FirstSeen, " to ", LastSeen)
+| order by SelectCount desc
+
+
+// ----------------------------------------------------------------------------
+// ALTERNATIVA 2: Detectar operaciones destructivas sin extraer tabla
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(10m)
+| where message contains "AUDIT:"
+| where message has_any ("DELETE", "UPDATE", "TRUNCATE", "DROP")
+| summarize 
+    DestructiveOpsCount = count(),
+    FirstOccurrence = min(EventProcessedUtcTime),
+    LastOccurrence = max(EventProcessedUtcTime),
+    Operations = make_set(
+        case(
+            message contains "DELETE", "DELETE",
+            message contains "UPDATE", "UPDATE",
+            message contains "TRUNCATE", "TRUNCATE",
+            message contains "DROP", "DROP",
+            "OTHER"
+        )
+    ),
+    SampleMessages = take_any(message, 2)
+    by LogicalServerName, backend_type, bin(EventProcessedUtcTime, 2m)
+| where DestructiveOpsCount > 5
+| extend AnomalyType = "Mass Destructive Operations"
+| project 
+    TimeGenerated = LastOccurrence,
+    AnomalyType,
+    ServerName = LogicalServerName,
+    backend_type,
+    DestructiveOpsCount,
+    Operations,
+    TimeWindow = strcat(FirstOccurrence, " to ", LastOccurrence)
+| order by DestructiveOpsCount desc
+
+
+// ----------------------------------------------------------------------------
+// PANEL DASHBOARD: Distribución de Operaciones (Versión Simplificada)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(6h)
+| where message contains "AUDIT:"
+| extend OperationType = case(
+    message contains ",SELECT,", "SELECT",
+    message contains ",UPDATE,", "UPDATE",
+    message contains ",INSERT,", "INSERT",
+    message contains ",DELETE,", "DELETE",
+    message contains ",TRUNCATE,", "TRUNCATE",
+    message contains ",DROP,", "DROP",
+    message contains ",CREATE,", "CREATE",
+    message contains "DISCARD ALL", "DISCARD",
+    message contains ",SET,", "SET",
+    "OTHER"
+)
+| summarize Count = count() by OperationType
+| order by Count desc
+| render piechart
+
+
+// ----------------------------------------------------------------------------
+// PANEL DASHBOARD: Timeline de Actividad AUDIT
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:"
+| extend OperationType = case(
+    message contains ",SELECT,", "SELECT",
+    message contains ",UPDATE,", "UPDATE",
+    message contains ",INSERT,", "INSERT",
+    message contains ",DELETE,", "DELETE",
+    "OTHER"
+)
+| summarize Count = count() by OperationType, bin(EventProcessedUtcTime, 2m)
+| render timechart

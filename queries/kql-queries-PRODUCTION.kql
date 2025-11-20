@@ -1,0 +1,620 @@
+// ============================================================================
+// KQL QUERIES FINALES - PostgreSQL Anomaly Detection
+// ============================================================================
+// Versión con CORRELACIÓN User/Database/Host
+// Los logs AUDIT no contienen user/database/host directamente
+// Se correlacionan con logs CONNECTION usando processId + LogicalServerName
+// ============================================================================
+
+// ============================================================================
+// HELPER: Tabla de sesiones (User/Database/Host por processId)
+// ============================================================================
+// Esta tabla se usa para enriquecer logs AUDIT con contexto de usuario
+let sessionInfo = 
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where message contains "connection authorized" or message contains "connection received"
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    ClientHost = extract(@"host=([^\s]+)", 1, message)
+| where isnotempty(UserName)
+| summarize User = any(UserName), Database = any(DatabaseName), SourceHost = any(ClientHost)
+    by processId, LogicalServerName;
+
+// ============================================================================
+// ANOMALÍA 1: Extracción Masiva de Datos (High SELECT Activity)
+// ============================================================================
+
+let suspiciousDataAccess = 
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(5m)
+| where category == "PostgreSQLLogs"
+| where message contains "AUDIT:"
+| where message has_any ("SELECT", "COPY", "pg_dump")
+| where backend_type == "client backend"  // ⚠️ SOLO usuarios reales, NO workers internos
+| extend 
+    AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    TableName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
+    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message)),
+    ProcessSession = strcat(LogicalServerName, "-", processId)
+| where AuditOperation == "READ" or AuditStatement == "SELECT"
+// Correlación con sessionInfo para obtener User/Database/Host
+| join kind=leftouter sessionInfo on processId, LogicalServerName
+| summarize 
+    SelectCount = count(),
+    FirstSeen = min(EventProcessedUtcTime),
+    LastSeen = max(EventProcessedUtcTime),
+    TablesAccessed = make_set(TableName, 10),  // Lista de tablas accedidas
+    SampleQueries = make_list(QueryText, 3),   // Primeras 3 queries (ordenadas)
+    User = any(User),
+    Database = any(Database),
+    SourceHost = any(SourceHost)
+    by ProcessSession, LogicalServerName, backend_type, processId
+| where SelectCount > 15  // Threshold ajustado: >15 SELECTs en 5 minutos
+| extend AnomalyType = "Potential Data Exfiltration"
+| project 
+    TimeGenerated = LastSeen,
+    AnomalyType,
+    ServerName = LogicalServerName,
+    User = iff(isempty(User), "UNKNOWN", User),
+    Database = iff(isempty(Database), "UNKNOWN", Database),
+    SourceHost = iff(isempty(SourceHost), "UNKNOWN", SourceHost),
+    BackendType = backend_type,
+    ProcessID = processId,
+    SelectCount,
+    TimeWindow = strcat(format_datetime(FirstSeen, 'HH:mm:ss'), " - ", format_datetime(LastSeen, 'HH:mm:ss')),
+    TablesAccessed = strcat_array(TablesAccessed, ", "),
+    SampleQueries = strcat_array(SampleQueries, " ||| ");
+
+suspiciousDataAccess
+
+
+// ============================================================================
+// ANOMALÍA 2: Operaciones Destructivas Masivas
+// ============================================================================
+
+let destructiveOperations = 
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(10m)
+| where category == "PostgreSQLLogs"
+| where message contains "AUDIT:"
+| where message has_any ("DELETE", "UPDATE", "TRUNCATE", "DROP TABLE", "DROP DATABASE")
+| extend 
+    AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    TableAffected = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
+    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message))
+| where AuditStatement in ("DELETE", "UPDATE", "TRUNCATE", "DROP") 
+    or QueryText contains "DROP TABLE" 
+    or QueryText contains "DROP DATABASE"
+// Correlación con sessionInfo para obtener User/Database/Host
+| join kind=leftouter sessionInfo on processId, LogicalServerName
+| summarize 
+    OperationCount = count(),
+    Operations = make_set(AuditStatement),
+    TablesAffected = make_set(TableAffected),
+    FirstOccurrence = min(EventProcessedUtcTime),
+    LastOccurrence = max(EventProcessedUtcTime),
+    SampleMessages = take_any(QueryText, 3),
+    User = any(User),
+    Database = any(Database),
+    SourceHost = any(SourceHost)
+    by LogicalServerName, backend_type, bin(EventProcessedUtcTime, 2m)
+| where OperationCount > 5  // Más de 5 operaciones destructivas en 2 minutos
+| where backend_type == "client backend"  // FILTRAR workers DESPUÉS del threshold
+| extend AnomalyType = "Mass Destructive Operations"
+| project 
+    TimeGenerated = LastOccurrence,
+    AnomalyType,
+    ServerName = LogicalServerName,
+    User = iff(isempty(User), "UNKNOWN", User),
+    Database = iff(isempty(Database), "UNKNOWN", Database),
+    SourceHost = iff(isempty(SourceHost), "UNKNOWN", SourceHost),
+    BackendType = backend_type,
+    OperationCount,
+    Operations,
+    TablesAffected,
+    TimeWindow = strcat(FirstOccurrence, " to ", LastOccurrence),
+    SampleMessages;
+
+destructiveOperations
+
+
+// ============================================================================
+// ANOMALÍA 3: Escalada de Errores Críticos
+// ============================================================================
+
+let errorSpike = 
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(5m)
+| where category == "PostgreSQLLogs"
+| where errorLevel in ("ERROR", "FATAL", "PANIC")
+    or (sqlerrcode != "00000" and sqlerrcode != "")
+| extend 
+    ErrorCategory = case(
+        message contains "authentication" or message contains "password", "Authentication Failure",
+        message contains "permission denied" or message contains "access denied", "Permission Denied",
+        message contains "connection" or message contains "timeout", "Connection Error",
+        sqlerrcode startswith "28", "Authorization Error",
+        sqlerrcode startswith "42", "Permission Error",
+        sqlerrcode startswith "08", "Connection Error",
+        sqlerrcode startswith "53", "Resource Error",
+        sqlerrcode startswith "57", "Operator Intervention",
+        "Other Error"
+    ),
+    // Extraer User/Database directamente de logs de error (pueden contener esta info)
+    DirectUser = extract(@"user=([^\s,]+)", 1, message),
+    DirectDatabase = extract(@"database=([^\s,]+)", 1, message),
+    DirectHost = extract(@"host=([^\s]+)", 1, message)
+// Correlación con sessionInfo para casos donde no está en el mensaje de error
+| join kind=leftouter sessionInfo on processId, LogicalServerName
+| extend
+    FinalUser = iff(isnotempty(DirectUser), DirectUser, User),
+    FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, Database),
+    FinalHost = iff(isnotempty(DirectHost), DirectHost, SourceHost)
+| summarize 
+    ErrorCount = count(),
+    ErrorTypes = make_set(ErrorCategory),
+    ErrorCodes = make_set(sqlerrcode),
+    FirstError = min(EventProcessedUtcTime),
+    LastError = max(EventProcessedUtcTime),
+    SampleErrors = take_any(message, 3),
+    User = any(FinalUser),
+    Database = any(FinalDatabase),
+    SourceHost = any(FinalHost)
+    by LogicalServerName, backend_type, bin(EventProcessedUtcTime, 1m)
+| where ErrorCount > 15  // Más de 15 errores por minuto
+| extend AnomalyType = "Critical Error Spike"
+| project 
+    TimeGenerated = LastError,
+    AnomalyType,
+    ServerName = LogicalServerName,
+    User = iff(isempty(User), "UNKNOWN", User),
+    Database = iff(isempty(Database), "UNKNOWN", Database),
+    SourceHost = iff(isempty(SourceHost), "UNKNOWN", SourceHost),
+    BackendType = backend_type,
+    ErrorCount,
+    ErrorTypes,
+    ErrorCodes,
+    TimeWindow = strcat(FirstError, " to ", LastError),
+    SampleErrors;
+
+errorSpike
+
+
+// ============================================================================
+// DASHBOARD PRINCIPAL: Todas las Anomalías
+// ============================================================================
+
+union
+    (suspiciousDataAccess),
+    (destructiveOperations),
+    (errorSpike)
+| order by TimeGenerated desc
+| take 100;
+
+
+// ============================================================================
+// DASHBOARD TILES - PANELES
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// TILE 1: Actividad General por Servidor (última hora)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| summarize 
+    TotalEvents = count(),
+    Errors = countif(errorLevel in ("ERROR", "FATAL", "PANIC")),
+    Warnings = countif(errorLevel == "WARNING"),
+    AuditLogs = countif(message contains "AUDIT:")
+    by LogicalServerName, bin(EventProcessedUtcTime, 2m)
+| render timechart;
+
+
+// ----------------------------------------------------------------------------
+// TILE 2: Distribución de Tipos de Operaciones AUDIT (últimas 6h)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(6h)
+| where message contains "AUDIT:"
+| extend AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message)
+| where isnotempty(AuditStatement)
+| summarize Count = count() by AuditStatement
+| order by Count desc
+| take 10
+| render piechart;
+
+
+// ----------------------------------------------------------------------------
+// TILE 3: Top 15 Tablas Más Accedidas (AUDIT)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(6h)
+| where message contains "AUDIT:"
+| extend TableName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message)
+| where isnotempty(TableName) and TableName != ""
+| summarize 
+    AccessCount = count(),
+    LastAccess = max(EventProcessedUtcTime)
+    by TableName, LogicalServerName
+| top 15 by AccessCount desc
+| project TableName, LogicalServerName, AccessCount, LastAccess;
+
+
+// ----------------------------------------------------------------------------
+// TILE 4: Timeline de Operaciones AUDIT por Tipo (última hora)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:"
+| extend OperationType = case(
+    message contains ",READ," or message contains ",SELECT,", "SELECT",
+    message contains ",WRITE," or message contains ",UPDATE,", "WRITE",
+    message contains ",DELETE,", "DELETE",
+    message contains ",INSERT,", "INSERT",
+    message contains ",DDL,", "DDL",
+    message contains ",MISC,", "MISC",
+    "OTHER"
+)
+| summarize Count = count() by OperationType, bin(EventProcessedUtcTime, 2m)
+| render timechart;
+
+
+// ----------------------------------------------------------------------------
+// TILE 5: Errores por Categoría (últimas 24h)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where errorLevel in ("ERROR", "FATAL", "PANIC")
+| extend ErrorCategory = case(
+    message contains "authentication", "Auth Errors",
+    message contains "permission", "Permission Errors",
+    message contains "connection", "Connection Errors",
+    sqlerrcode startswith "28", "Auth Errors",
+    sqlerrcode startswith "42", "Permission Errors",
+    sqlerrcode startswith "08", "Connection Errors",
+    sqlerrcode startswith "53", "Resource Errors",
+    "Other Errors"
+)
+| summarize Count = count() by ErrorCategory, bin(EventProcessedUtcTime, 30m)
+| render areachart;
+
+
+// ----------------------------------------------------------------------------
+// TILE 6: Actividad por Backend Type (última hora)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:"
+| summarize 
+    TotalLogs = count(),
+    Errors = countif(errorLevel in ("ERROR", "FATAL"))
+    by backend_type, bin(EventProcessedUtcTime, 5m)
+| render timechart;
+
+
+// ----------------------------------------------------------------------------
+// TILE 7: Operaciones Destructivas Recientes (últimas 6h)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(6h)
+| where message contains "AUDIT:"
+| where message has_any ("DELETE", "UPDATE", "TRUNCATE", "DROP")
+| extend 
+    Operation = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    TableAffected = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
+    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message))
+| where isnotempty(Operation)
+| project 
+    EventProcessedUtcTime,
+    LogicalServerName,
+    Operation,
+    TableAffected,
+    backend_type,
+    QueryText = substring(QueryText, 0, 80)
+| order by EventProcessedUtcTime desc
+| take 50;
+
+
+// ----------------------------------------------------------------------------
+// TILE 8: Top Códigos de Error (últimas 24h)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where sqlerrcode != "00000" and sqlerrcode != ""
+| summarize 
+    Count = count(),
+    LastOccurrence = max(EventProcessedUtcTime)
+    by sqlerrcode, errorLevel
+| order by Count desc
+| take 15
+| extend ErrorDescription = case(
+    sqlerrcode startswith "28", "Auth/Authorization",
+    sqlerrcode startswith "42", "Syntax/Permission",
+    sqlerrcode startswith "08", "Connection Exception",
+    sqlerrcode startswith "53", "Insufficient Resources",
+    sqlerrcode startswith "57", "Operator Intervention",
+    sqlerrcode startswith "23", "Integrity Violation",
+    "Other"
+)
+| project sqlerrcode, ErrorDescription, errorLevel, Count, LastOccurrence;
+
+
+// ----------------------------------------------------------------------------
+// TILE 9: TOP 10 USUARIOS por Actividad (últimas 24h)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| extend UserName = extract(@"user=([^\s,]+)", 1, message)
+| where isnotempty(UserName)
+| summarize 
+    TotalActivity = count(),
+    AuditLogs = countif(message contains "AUDIT:"),
+    Connections = countif(message contains "connection authorized"),
+    Errors = countif(errorLevel in ("ERROR", "FATAL")),
+    Databases = dcount(extract(@"database=([^\s,]+)", 1, message)),
+    LastActivity = max(EventProcessedUtcTime)
+    by UserName
+| top 10 by TotalActivity desc
+| project UserName, TotalActivity, AuditLogs, Connections, Errors, Databases, LastActivity;
+
+
+// ----------------------------------------------------------------------------
+// TILE 10: TOP 10 HOSTS/IPs por Conexiones (últimas 24h)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| extend ClientHost = extract(@"host=([^\s]+)", 1, message)
+| where isnotempty(ClientHost)
+| summarize 
+    TotalConnections = count(),
+    UniqueUsers = dcount(extract(@"user=([^\s,]+)", 1, message)),
+    Errors = countif(errorLevel in ("ERROR", "FATAL")),
+    FirstSeen = min(EventProcessedUtcTime),
+    LastSeen = max(EventProcessedUtcTime)
+    by ClientHost
+| extend 
+    ErrorRate = round((todouble(Errors) / TotalConnections) * 100, 2),
+    Riesgo = case(
+        ErrorRate > 20, "HIGH",
+        ErrorRate > 5, "MEDIUM",
+        "LOW"
+    )
+| top 10 by TotalConnections desc
+| project ClientHost, TotalConnections, UniqueUsers, Errors, ErrorRate, Riesgo, FirstSeen, LastSeen;
+
+
+// ----------------------------------------------------------------------------
+// TILE 11: Heat Map User + Database (últimas 24h)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where message contains "AUDIT:" or message contains "connection authorized"
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message)
+| where isnotempty(UserName) and isnotempty(DatabaseName)
+| summarize 
+    ActivityCount = count(),
+    AuditLogs = countif(message contains "AUDIT:"),
+    LastActivity = max(EventProcessedUtcTime)
+    by UserName, DatabaseName
+| where ActivityCount > 10
+| order by ActivityCount desc
+| take 50
+| project UserName, DatabaseName, ActivityCount, AuditLogs, LastActivity;
+
+
+// ----------------------------------------------------------------------------
+// TILE 12: Fallos de Autenticación por Usuario/Host (últimas 24h)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where message contains "authentication failed" 
+    or message contains "password authentication failed"
+    or sqlerrcode == "28P01"
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    ClientHost = extract(@"host=([^\s]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message)
+| summarize 
+    FailedAttempts = count(),
+    FirstAttempt = min(EventProcessedUtcTime),
+    LastAttempt = max(EventProcessedUtcTime),
+    Databases = make_set(DatabaseName)
+    by UserName, ClientHost
+| extend 
+    ThreatLevel = case(
+        FailedAttempts > 20, "CRITICAL",
+        FailedAttempts > 10, "HIGH",
+        FailedAttempts > 5, "MEDIUM",
+        "LOW"
+    )
+| order by FailedAttempts desc
+| take 20
+| project UserName, ClientHost, FailedAttempts, ThreatLevel, Databases, FirstAttempt, LastAttempt;
+
+
+// ============================================================================
+// QUERIES DE ANÁLISIS AVANZADO
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// Detección de Acceso a Tablas del Sistema (Reconocimiento)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where message contains "AUDIT:"
+| extend QueryText = trim('"', extract(@",,,([^<]+)<", 1, message))
+| where QueryText contains "pg_catalog" 
+    or QueryText contains "information_schema"
+    or QueryText contains "pg_database"
+    or QueryText contains "pg_stat"
+    or QueryText contains "pg_tables"
+| extend 
+    AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message)
+// Correlación para identificar el usuario
+| join kind=leftouter sessionInfo on processId, LogicalServerName
+| summarize 
+    AccessCount = count(),
+    Operations = make_set(AuditStatement),
+    FirstAccess = min(EventProcessedUtcTime),
+    LastAccess = max(EventProcessedUtcTime),
+    SampleQueries = take_any(QueryText, 3),
+    User = any(User),
+    SourceHost = any(SourceHost)
+    by LogicalServerName, backend_type, bin(EventProcessedUtcTime, 1h)
+| where AccessCount > 10
+| extend SuspicionLevel = case(
+    AccessCount > 50, "🔴 High",
+    AccessCount > 20, "🟠 Medium",
+    "🟢 Low"
+)
+| project 
+    LastAccess,
+    LogicalServerName,
+    User = iff(isempty(User), "UNKNOWN", User),
+    SourceHost = iff(isempty(SourceHost), "UNKNOWN", SourceHost),
+    AccessCount,
+    SuspicionLevel,
+    Operations,
+    FirstAccess,
+    SampleQueries
+| order by AccessCount desc;
+
+
+// ----------------------------------------------------------------------------
+// Análisis de Patrones de Acceso por Tabla (Read vs Write)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(7d)
+| where message contains "AUDIT:"
+| extend 
+    Operation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
+    Statement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    Table = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message)
+| where isnotempty(Table) and Table != ""
+| summarize 
+    TotalAccess = count(),
+    Reads = countif(Operation == "READ" or Statement == "SELECT"),
+    Writes = countif(Operation == "WRITE" or Statement in ("INSERT", "UPDATE", "DELETE")),
+    DDL = countif(Operation == "DDL"),
+    LastAccess = max(EventProcessedUtcTime)
+    by Table, LogicalServerName
+| extend ReadWriteRatio = iff(Writes > 0, round(todouble(Reads) / todouble(Writes), 2), 999.0)
+| order by TotalAccess desc
+| take 30;
+
+
+// ----------------------------------------------------------------------------
+// Sesiones de Larga Duración (Posible Sesión Comprometida)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| summarize 
+    FirstActivity = min(EventProcessedUtcTime),
+    LastActivity = max(EventProcessedUtcTime),
+    TotalEvents = count(),
+    AuditEvents = countif(message contains "AUDIT:"),
+    ErrorCount = countif(errorLevel in ("ERROR", "FATAL"))
+    by processId, LogicalServerName, backend_type
+| extend SessionDuration = datetime_diff('minute', LastActivity, FirstActivity)
+| where SessionDuration > 120  // Sesiones de más de 2 horas
+| order by SessionDuration desc
+| extend Alert = case(
+    SessionDuration > 480, "🔴 Very Long Session (>8h)",
+    SessionDuration > 240, "🟠 Long Session (>4h)",
+    "🟡 Medium Session (>2h)"
+)
+| project 
+    processId,
+    LogicalServerName,
+    backend_type,
+    SessionDurationHours = round(todouble(SessionDuration) / 60.0, 2),
+    TotalEvents,
+    AuditEvents,
+    ErrorCount,
+    FirstActivity,
+    LastActivity,
+    Alert;
+
+
+// ----------------------------------------------------------------------------
+// Baseline de Actividad por Hora del Día (últimos 7 días)
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(7d)
+| extend HourOfDay = hourofday(EventProcessedUtcTime)
+| summarize 
+    AvgEventsPerHour = count() / 7,
+    MaxEvents = max(bin(EventProcessedUtcTime, 1h)),
+    MinEvents = min(bin(EventProcessedUtcTime, 1h))
+    by HourOfDay, LogicalServerName
+| order by HourOfDay asc
+| render columnchart;
+
+
+// ============================================================================
+// QUERIES DE VALIDACIÓN
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// Verificar que llegan datos recientes
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| summarize 
+    LastEvent = max(EventProcessedUtcTime),
+    FirstEvent = min(EventProcessedUtcTime),
+    TotalEvents = count(),
+    TimeRange = datetime_diff('day', max(EventProcessedUtcTime), min(EventProcessedUtcTime))
+| extend 
+    Status = iff(datetime_diff('minute', now(), LastEvent) < 5, "✅ Fresh data", "⚠️ Stale data"),
+    LatencyMinutes = datetime_diff('minute', now(), LastEvent);
+
+
+// ----------------------------------------------------------------------------
+// Cobertura de AUDIT Logs
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| summarize 
+    TotalLogs = count(),
+    AuditLogs = countif(message contains "AUDIT:"),
+    ErrorLogs = countif(errorLevel in ("ERROR", "FATAL", "PANIC")),
+    WarningLogs = countif(errorLevel == "WARNING")
+    by LogicalServerName
+| extend 
+    AuditCoverage = round((todouble(AuditLogs) / TotalLogs) * 100, 2),
+    ErrorRate = round((todouble(ErrorLogs) / TotalLogs) * 100, 2);
+
+
+// ----------------------------------------------------------------------------
+// Distribución de Backend Types
+// ----------------------------------------------------------------------------
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| summarize Count = count() by backend_type
+| order by Count desc;

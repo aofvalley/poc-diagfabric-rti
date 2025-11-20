@@ -1,0 +1,432 @@
+// ============================================================================
+// KQL QUERIES ENHANCED - PostgreSQL Anomaly Detection v2.1
+// ============================================================================
+// NUEVA VERSIÓN con extracción de USER, DATABASE, IP (cuando disponible)
+// Basado en análisis de mensaje real:
+// "connection authorized: user=X database=Y SSL enabled..."
+// ============================================================================
+
+// ============================================================================
+// FUNCIONES AUXILIARES PARA EXTRACCIÓN
+// ============================================================================
+
+// Función para extraer user del mensaje
+.create-or-alter function ExtractUser() {
+    bronze_pssql_alllogs_nometrics
+    | extend UserName = extract(@"user=([^\s]+)", 1, message)
+}
+
+// Función para extraer database del mensaje
+.create-or-alter function ExtractDatabase() {
+    bronze_pssql_alllogs_nometrics
+    | extend DatabaseName = extract(@"database=([^\s]+)", 1, message)
+}
+
+// Función para extraer IP (si está disponible en logs de conexión)
+.create-or-alter function ExtractClientIP() {
+    bronze_pssql_alllogs_nometrics
+    | extend ClientIP = extract(@"host=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", 1, message)
+}
+
+
+// ============================================================================
+// ANOMALÍA 1: Extracción Masiva de Datos - CON USER + DATABASE + IP
+// ============================================================================
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(5m)
+| where category == "PostgreSQLLogs"
+| where message contains "AUDIT:"
+| where message has_any ("SELECT", "COPY", "pg_dump")
+| extend 
+    // Extracción AUDIT
+    AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message)),
+    TableName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
+    // Extracción CONTEXTO (user, database, IP)
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    ClientIP = extract(@"host=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", 1, message)
+| where AuditOperation == "READ" or AuditStatement == "SELECT"
+// Agrupar por USER + DATABASE + IP (crítico para seguridad)
+| summarize 
+    SelectCount = count(),
+    FirstSeen = min(EventProcessedUtcTime),
+    LastSeen = max(EventProcessedUtcTime),
+    TablesAccessed = make_set(TableName),
+    SampleQueries = take_any(QueryText, 3)
+    by UserName, DatabaseName, ClientIP, LogicalServerName, processId, backend_type, bin(EventProcessedUtcTime, 1m)
+| where SelectCount > 50  // 🚨 Umbral: > 50 SELECTs en 1 minuto
+| extend 
+    AnomalyType = "🔴 Potential Data Exfiltration",
+    Severity = case(
+        SelectCount > 200, "CRITICAL",
+        SelectCount > 100, "HIGH",
+        "MEDIUM"
+    ),
+    RiskScore = case(
+        isempty(ClientIP), 80,  // Sin IP = más sospechoso
+        UserName in ("postgres", "admin", "azuresu"), 60,  // Usuarios privilegiados
+        90  // Usuario normal con actividad alta
+    )
+| project 
+    TimeGenerated = LastSeen,
+    AnomalyType,
+    Severity,
+    RiskScore,
+    ServerName = LogicalServerName,
+    User = UserName,
+    Database = DatabaseName,
+    SourceIP = iff(isempty(ClientIP), "❌ No disponible", ClientIP),
+    ProcessID = processId,
+    BackendType = backend_type,
+    SelectCount,
+    TablesAccessed,
+    TimeWindow = strcat(FirstSeen, " → ", LastSeen),
+    SampleQueries
+| order by RiskScore desc, SelectCount desc;
+
+
+// ============================================================================
+// ANOMALÍA 2: Operaciones Destructivas - CON USER + DATABASE + IP
+// ============================================================================
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(10m)
+| where category == "PostgreSQLLogs"
+| where message contains "AUDIT:"
+| where message has_any ("DELETE", "UPDATE", "TRUNCATE", "DROP TABLE", "DROP DATABASE")
+| extend 
+    // Extracción AUDIT
+    AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    TableAffected = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
+    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message)),
+    // Extracción CONTEXTO
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    ClientIP = extract(@"host=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", 1, message)
+| where AuditStatement in ("DELETE", "UPDATE", "TRUNCATE", "DROP") 
+    or QueryText contains "DROP TABLE" 
+    or QueryText contains "DROP DATABASE"
+| summarize 
+    DestructiveOpCount = count(),
+    Operations = make_set(AuditStatement),
+    TablesAffected = make_set(TableAffected),
+    FirstOccurrence = min(EventProcessedUtcTime),
+    LastOccurrence = max(EventProcessedUtcTime),
+    SampleQueries = take_any(QueryText, 3)
+    by UserName, DatabaseName, ClientIP, LogicalServerName, processId, backend_type, bin(EventProcessedUtcTime, 2m)
+| where DestructiveOpCount > 20  // 🚨 Umbral: > 20 ops destructivas en 2 minutos
+| extend 
+    AnomalyType = "🟠 Mass Destructive Operations",
+    Severity = case(
+        Operations has "DROP DATABASE", "CRITICAL",
+        Operations has "DROP TABLE" or Operations has "TRUNCATE", "HIGH",
+        "MEDIUM"
+    ),
+    RiskScore = case(
+        Operations has "DROP DATABASE", 100,
+        DestructiveOpCount > 50, 90,
+        DestructiveOpCount > 30, 70,
+        50
+    )
+| project 
+    TimeGenerated = LastOccurrence,
+    AnomalyType,
+    Severity,
+    RiskScore,
+    ServerName = LogicalServerName,
+    User = UserName,
+    Database = DatabaseName,
+    SourceIP = iff(isempty(ClientIP), "❌ No disponible", ClientIP),
+    ProcessID = processId,
+    BackendType = backend_type,
+    DestructiveOpCount,
+    Operations,
+    TablesAffected,
+    TimeWindow = strcat(FirstOccurrence, " → ", LastOccurrence),
+    SampleQueries
+| order by RiskScore desc, DestructiveOpCount desc;
+
+
+// ============================================================================
+// ANOMALÍA 3: Error Spike - CON USER + DATABASE + IP
+// ============================================================================
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(5m)
+| where errorLevel in ("ERROR", "FATAL", "PANIC")
+| extend 
+    // Extracción CONTEXTO
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    ClientIP = extract(@"host=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", 1, message),
+    // Categorización de errores
+    ErrorCategory = case(
+        message contains "authentication" or sqlerrcode startswith "28", "🔐 Auth Errors",
+        message contains "permission" or sqlerrcode startswith "42", "🚫 Permission Errors",
+        message contains "connection" or sqlerrcode startswith "08", "🔌 Connection Errors",
+        sqlerrcode startswith "53", "💾 Resource Errors",
+        sqlerrcode startswith "57", "⚙️ Operator Intervention",
+        "❓ Other Errors"
+    )
+| summarize 
+    ErrorCount = count(),
+    ErrorCategories = make_set(ErrorCategory),
+    TopErrorCodes = take_any(sqlerrcode, 5),
+    FirstError = min(EventProcessedUtcTime),
+    LastError = max(EventProcessedUtcTime),
+    SampleErrors = take_any(message, 3)
+    by UserName, DatabaseName, ClientIP, LogicalServerName, bin(EventProcessedUtcTime, 1m)
+| where ErrorCount > 30  // 🚨 Umbral: > 30 errores en 1 minuto
+| extend 
+    AnomalyType = "🔴 Critical Error Spike",
+    Severity = case(
+        ErrorCount > 100, "CRITICAL",
+        ErrorCount > 50, "HIGH",
+        "MEDIUM"
+    ),
+    RiskScore = case(
+        ErrorCategories has "Auth Errors" and ErrorCount > 50, 100,  // Posible brute-force
+        ErrorCategories has "Permission Errors" and ErrorCount > 30, 90,  // Posible privilege escalation
+        ErrorCategories has "Connection Errors", 60,  // Problema de red/DoS
+        70
+    ),
+    PossibleAttack = case(
+        ErrorCategories has "Auth Errors" and ErrorCount > 50, "⚠️ Brute-Force Attack",
+        ErrorCategories has "Permission Errors" and ErrorCount > 30, "⚠️ Privilege Escalation Attempt",
+        ErrorCategories has "Connection Errors" and ErrorCount > 100, "⚠️ Possible DoS",
+        "ℹ️ Investigate"
+    )
+| project 
+    TimeGenerated = LastError,
+    AnomalyType,
+    Severity,
+    RiskScore,
+    PossibleAttack,
+    ServerName = LogicalServerName,
+    User = iff(isempty(UserName), "❓ Unknown", UserName),
+    Database = iff(isempty(DatabaseName), "❓ Unknown", DatabaseName),
+    SourceIP = iff(isempty(ClientIP), "❌ No disponible", ClientIP),
+    ErrorCount,
+    ErrorCategories,
+    TopErrorCodes,
+    TimeWindow = strcat(FirstError, " → ", LastError),
+    SampleErrors
+| order by RiskScore desc, ErrorCount desc;
+
+
+// ============================================================================
+// DASHBOARD TILE 1: TOP USUARIOS CON MÁS ACTIVIDAD (últimas 24h)
+// ============================================================================
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where message contains "AUDIT:"
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message)
+| where isnotempty(UserName)
+| summarize 
+    TotalQueries = count(),
+    Databases = dcount(DatabaseName),
+    Operations = make_set(AuditStatement),
+    LastActivity = max(EventProcessedUtcTime),
+    Sessions = dcount(processId)
+    by UserName, LogicalServerName
+| top 15 by TotalQueries desc
+| extend RiskLevel = case(
+    UserName in ("postgres", "admin", "root"), "🔴 High Privilege",
+    TotalQueries > 10000, "🟠 High Activity",
+    "🟢 Normal"
+)
+| project 
+    User = UserName,
+    Server = LogicalServerName,
+    TotalQueries,
+    UniqueDatabases = Databases,
+    ActiveSessions = Sessions,
+    Operations,
+    LastActivity,
+    RiskLevel
+| order by TotalQueries desc;
+
+
+// ============================================================================
+// DASHBOARD TILE 2: TOP IPs CON MÁS ACTIVIDAD (si disponible)
+// ============================================================================
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| extend ClientIP = extract(@"host=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", 1, message)
+| where isnotempty(ClientIP)
+| summarize 
+    TotalConnections = count(),
+    UniqueUsers = dcount(extract(@"user=([^\s,]+)", 1, message)),
+    UniqueDatabases = dcount(extract(@"database=([^\s,]+)", 1, message)),
+    Errors = countif(errorLevel in ("ERROR", "FATAL", "PANIC")),
+    LastSeen = max(EventProcessedUtcTime)
+    by ClientIP, LogicalServerName
+| top 15 by TotalConnections desc
+| extend 
+    ErrorRate = round((todouble(Errors) / TotalConnections) * 100, 2),
+    RiskLevel = case(
+        ErrorRate > 20, "🔴 High Error Rate (Suspicious)",
+        TotalConnections > 10000, "🟠 High Volume",
+        "🟢 Normal"
+    )
+| project 
+    SourceIP = ClientIP,
+    Server = LogicalServerName,
+    TotalConnections,
+    UniqueUsers,
+    UniqueDatabases,
+    Errors,
+    ErrorRate = strcat(ErrorRate, "%"),
+    LastSeen,
+    RiskLevel
+| order by TotalConnections desc;
+
+
+// ============================================================================
+// DASHBOARD TILE 3: ACTIVIDAD POR USER + DATABASE (Heat Map)
+// ============================================================================
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(6h)
+| where message contains "AUDIT:"
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message)
+| where isnotempty(UserName) and isnotempty(DatabaseName)
+| summarize 
+    TotalOperations = count(),
+    Reads = countif(AuditStatement == "SELECT"),
+    Writes = countif(AuditStatement in ("INSERT", "UPDATE", "DELETE")),
+    DDL = countif(AuditStatement has_any ("CREATE", "DROP", "ALTER"))
+    by UserName, DatabaseName, bin(EventProcessedUtcTime, 30m)
+| extend ReadWriteRatio = round(todouble(Reads) / todouble(Writes + 1), 2)
+| project 
+    TimeGenerated = EventProcessedUtcTime,
+    User = UserName,
+    Database = DatabaseName,
+    TotalOps = TotalOperations,
+    Reads,
+    Writes,
+    DDL,
+    ReadWriteRatio
+| render timechart;
+
+
+// ============================================================================
+// DASHBOARD TILE 4: CONEXIONES FALLIDAS POR USER + IP (Auth Failures)
+// ============================================================================
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where errorLevel in ("ERROR", "FATAL")
+| where message contains "authentication failed" or sqlerrcode startswith "28"
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    ClientIP = extract(@"host=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", 1, message)
+| where isnotempty(UserName)
+| summarize 
+    FailedAttempts = count(),
+    FirstAttempt = min(EventProcessedUtcTime),
+    LastAttempt = max(EventProcessedUtcTime),
+    TargetDatabases = make_set(DatabaseName)
+    by UserName, ClientIP, LogicalServerName
+| where FailedAttempts > 3  // Más de 3 intentos fallidos
+| extend 
+    AttackType = case(
+        FailedAttempts > 50, "🔴 BRUTE-FORCE (>50 attempts)",
+        FailedAttempts > 20, "🟠 Possible Attack (>20 attempts)",
+        "🟡 Suspicious (>3 attempts)"
+    ),
+    Duration = LastAttempt - FirstAttempt
+| project 
+    AttackType,
+    User = UserName,
+    SourceIP = iff(isempty(ClientIP), "❌ No disponible", ClientIP),
+    Server = LogicalServerName,
+    FailedAttempts,
+    Duration,
+    FirstAttempt,
+    LastAttempt,
+    TargetDatabases
+| order by FailedAttempts desc;
+
+
+// ============================================================================
+// ANÁLISIS AVANZADO: Usuarios con Actividad Anómala (Baseline Deviation)
+// ============================================================================
+
+// Paso 1: Calcular baseline (últimos 7 días)
+let baseline = 
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime between (ago(7d) .. ago(1h))
+| where message contains "AUDIT:"
+| extend UserName = extract(@"user=([^\s,]+)", 1, message)
+| where isnotempty(UserName)
+| summarize AvgQueriesPerHour = count() / (7*24) by UserName, LogicalServerName;
+
+// Paso 2: Comparar con actividad reciente (última hora)
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:"
+| extend UserName = extract(@"user=([^\s,]+)", 1, message)
+| where isnotempty(UserName)
+| summarize CurrentQueries = count() by UserName, LogicalServerName
+| join kind=inner baseline on UserName, LogicalServerName
+| extend DeviationFactor = round(CurrentQueries / AvgQueriesPerHour, 2)
+| where DeviationFactor > 3.0  // 3x más actividad que baseline
+| extend AnomalyType = "📈 Baseline Deviation"
+| project 
+    User = UserName,
+    Server = LogicalServerName,
+    CurrentQueries,
+    NormalAverage = round(AvgQueriesPerHour, 2),
+    DeviationFactor = strcat(DeviationFactor, "x normal"),
+    Severity = case(
+        DeviationFactor > 10, "🔴 CRITICAL",
+        DeviationFactor > 5, "🟠 HIGH",
+        "🟡 MEDIUM"
+    )
+| order by DeviationFactor desc;
+
+
+// ============================================================================
+// QUERY DE VALIDACIÓN: Verificar extracción de USER, DATABASE, IP
+// ============================================================================
+
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    ClientIP = extract(@"host=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", 1, message),
+    HasAudit = iff(message contains "AUDIT:", "✅", "❌"),
+    MessageType = case(
+        message contains "connection authorized", "CONNECTION",
+        message contains "AUDIT:", "AUDIT",
+        message contains "authentication failed", "AUTH_FAILED",
+        "OTHER"
+    )
+| summarize 
+    TotalLogs = count(),
+    WithUser = countif(isnotempty(UserName)),
+    WithDatabase = countif(isnotempty(DatabaseName)),
+    WithIP = countif(isnotempty(ClientIP)),
+    WithAudit = countif(HasAudit == "✅")
+    by MessageType
+| extend 
+    UserCoverage = strcat(round((todouble(WithUser) / TotalLogs) * 100, 1), "%"),
+    DatabaseCoverage = strcat(round((todouble(WithDatabase) / TotalLogs) * 100, 1), "%"),
+    IPCoverage = strcat(round((todouble(WithIP) / TotalLogs) * 100, 1), "%")
+| project MessageType, TotalLogs, UserCoverage, DatabaseCoverage, IPCoverage, WithAudit
+| order by TotalLogs desc;

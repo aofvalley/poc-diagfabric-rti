@@ -1,0 +1,15 @@
+// DEBUG: Ver formato REAL de mensajes AUDIT
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:"
+| where message has_any ("DELETE", "UPDATE", "DROP")
+| project 
+    EventProcessedUtcTime,
+    processId,
+    backend_type,
+    message,
+    // Intentar extraer user/database
+    ExtractedUser = extract(@"user=([^\s,]+)", 1, message),
+    ExtractedDatabase = extract(@"database=([^\s,]+)", 1, message),
+    ExtractedHost = extract(@"host=([^\s]+)", 1, message)
+| take 10;
