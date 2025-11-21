@@ -262,13 +262,14 @@ union
 
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(1h)
+| where isnotempty(LogicalServerName) and trim(" ", LogicalServerName) != ""
 | summarize 
     TotalEvents = count(),
     Errors = countif(errorLevel in ("ERROR", "FATAL", "PANIC")),
     Warnings = countif(errorLevel == "WARNING"),
     AuditLogs = countif(message contains "AUDIT:")
     by LogicalServerName, bin(EventProcessedUtcTime, 2m)
-| render timechart;
+| render timechart
 
 
 // ----------------------------------------------------------------------------
@@ -293,14 +294,18 @@ bronze_pssql_alllogs_nometrics
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(6h)
 | where message contains "AUDIT:"
-| extend TableName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message)
-| where isnotempty(TableName) and TableName != ""
+| extend 
+    ObjectType = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
+    ObjectName = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,[^,]*,([^,<]*)", 1, message)
+| where isnotempty(ObjectName) and ObjectName != ""
 | summarize 
     AccessCount = count(),
-    LastAccess = max(EventProcessedUtcTime)
-    by TableName, LogicalServerName
+    LastAccess = max(EventProcessedUtcTime),
+    ObjectTypes = make_set(ObjectType, 5)  // Capturar tipos de objeto accedidos
+    by ObjectName, LogicalServerName
+| extend ObjectTypesDisplay = strcat_array(ObjectTypes, ", ")
 | top 15 by AccessCount desc
-| project TableName, LogicalServerName, AccessCount, LastAccess;
+| project ObjectName, ObjectTypesDisplay, LogicalServerName, AccessCount, LastAccess;
 
 
 // ----------------------------------------------------------------------------
@@ -413,14 +418,14 @@ bronze_pssql_alllogs_nometrics
 
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(24h)
-| extend UserName = extract(@"user=([^\s,]+)", 1, message)
+| extend UserName = trim('"', extract(@"user=([^\s,]+)", 1, message))
 | where isnotempty(UserName)
 | summarize 
     TotalActivity = count(),
     AuditLogs = countif(message contains "AUDIT:"),
     Connections = countif(message contains "connection authorized"),
     Errors = countif(errorLevel in ("ERROR", "FATAL")),
-    Databases = dcount(extract(@"database=([^\s,]+)", 1, message)),
+    Databases = dcount(trim('"', extract(@"database=([^\s,]+)", 1, message))),
     LastActivity = max(EventProcessedUtcTime)
     by UserName
 | top 10 by TotalActivity desc
@@ -529,27 +534,30 @@ bronze_pssql_alllogs_nometrics
     or QueryText contains "pg_tables"
 | extend 
     AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
-    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message)
+    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    DirectUser = trim('"', extract(@"user=([^\s,]+)", 1, message))
 // Correlación para identificar el usuario (inline)
 | join kind=leftouter (
     bronze_pssql_alllogs_nometrics
     | where EventProcessedUtcTime >= ago(24h)
     | where message contains "connection authorized" or message contains "connection received"
     | extend 
-        UserName = extract(@"user=([^\s,]+)", 1, message),
+        UserName = trim('"', extract(@"user=([^\s,]+)", 1, message)),
         DatabaseName = extract(@"database=([^\s,]+)", 1, message),
         ClientHost = extract(@"host=([^\s]+)", 1, message)
     | where isnotempty(UserName)
     | summarize User = any(UserName), Database = any(DatabaseName), SourceHost = any(ClientHost)
         by processId, LogicalServerName
 ) on processId, LogicalServerName
+| extend FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN"))
+| where FinalUser != "azuresu"  // Filtrar usuario de monitoreo de la plataforma
 | summarize 
     AccessCount = count(),
     Operations = make_set(AuditStatement),
     FirstAccess = min(EventProcessedUtcTime),
     LastAccess = max(EventProcessedUtcTime),
     SampleQueries = take_any(QueryText, 3),
-    User = any(User),
+    User = any(FinalUser),
     SourceHost = any(SourceHost)
     by LogicalServerName, backend_type, bin(EventProcessedUtcTime, 1h)
 | where AccessCount > 10
@@ -561,7 +569,7 @@ bronze_pssql_alllogs_nometrics
 | project 
     LastAccess,
     LogicalServerName,
-    User = iff(isempty(User), "UNKNOWN", User),
+    User,
     SourceHost = iff(isempty(SourceHost), "UNKNOWN", SourceHost),
     AccessCount,
     SuspicionLevel,
@@ -635,6 +643,7 @@ bronze_pssql_alllogs_nometrics
 
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(7d)
+| where isnotempty(LogicalServerName) and trim(" ", LogicalServerName) != ""
 | extend HourOfDay = hourofday(EventProcessedUtcTime)
 | summarize 
     AvgEventsPerHour = count() / 7,
