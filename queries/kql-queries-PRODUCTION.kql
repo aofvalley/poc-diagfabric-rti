@@ -151,7 +151,7 @@ destructiveOperations
 
 let errorSpike = 
 bronze_pssql_alllogs_nometrics
-| where EventProcessedUtcTime >= ago(5m)
+| where EventProcessedUtcTime >= ago(30m)  // Aumentado de 5m a 30m para troubleshooting
 | where category == "PostgreSQLLogs"
 | where errorLevel in ("ERROR", "FATAL", "PANIC")
     or (sqlerrcode != "00000" and sqlerrcode != "")
@@ -174,9 +174,9 @@ bronze_pssql_alllogs_nometrics
 // Correlación con sessionInfo para casos donde no está en el mensaje de error
 | join kind=leftouter sessionInfo on processId, LogicalServerName
 | extend
-    FinalUser = iff(isnotempty(DirectUser), DirectUser, User),
-    FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, Database),
-    FinalHost = iff(isnotempty(DirectHost), DirectHost, SourceHost)
+    FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN")),
+    FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, iff(isnotempty(Database), Database, "UNKNOWN")),
+    FinalHost = iff(isnotempty(DirectHost), DirectHost, iff(isnotempty(SourceHost), SourceHost, "UNKNOWN"))
 | summarize 
     ErrorCount = count(),
     ErrorTypes = make_set(ErrorCategory),
@@ -188,7 +188,7 @@ bronze_pssql_alllogs_nometrics
     Database = any(FinalDatabase),
     SourceHost = any(FinalHost)
     by LogicalServerName, backend_type, bin(EventProcessedUtcTime, 1m)
-| where ErrorCount > 15  // Más de 15 errores por minuto
+// Eliminado threshold para troubleshooting - muestra todos los errores agrupados
 | extend AnomalyType = "Critical Error Spike"
 | project 
     TimeGenerated = LastError,
@@ -202,7 +202,8 @@ bronze_pssql_alllogs_nometrics
     ErrorTypes,
     ErrorCodes,
     TimeWindow = strcat(FirstError, " to ", LastError),
-    SampleErrors;
+    SampleErrors
+| order by ErrorCount desc;  // Ordenar por ErrorCount para ver los picos primero
 
 errorSpike
 

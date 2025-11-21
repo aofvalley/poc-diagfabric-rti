@@ -229,12 +229,24 @@ SELECT * FROM tabla_inexistente_18;
 -- - "Extrae información del usuario/database/host desde los mensajes de error"
 -- - "Si no hay user en el error, correlaciona con CONNECTION logs usando processId"
 -- - "Esto permite identificar QUIÉN está generando los errores"
+-- 
+-- 🔍 TROUBLESHOOTING: Si no ves resultados en el dashboard:
+-- 1. Aumenta la ventana de tiempo de 5m a 30m (editado en kql-queries-PRODUCTION.kql)
+-- 2. Threshold eliminado temporalmente (muestra todos los buckets de errores)
+-- 3. Ordenado por ErrorCount desc para ver los picos primero
+-- 4. Fallback triple añadido: DirectUser → SessionUser → "UNKNOWN"
+--
 -- Luego, abre el dashboard y muestra la Anomalía 3 con:
--- - ErrorCount >= 20
--- - ErrorTypes = "Other Error" (o "Permission Error" si probaste permisos)
+-- - ErrorCount: Cualquier valor (sin threshold, verás todos los buckets)
+-- - ErrorTypes = "Permission Error" (código 42xxx)
 -- - ErrorCodes = "42P01, 42703" (undefined_table, undefined_column)
 -- - SampleErrors con mensajes de las queries fallidas
--- - User/Database/SourceHost identificados
+-- - User/Database/SourceHost identificados (con fallback a "UNKNOWN" si es necesario)
+--
+-- ⚙️ PARA PRODUCCIÓN: Después de verificar que funciona:
+-- - Restaura ventana a ago(5m)
+-- - Agrega de nuevo: | where ErrorCount > 15
+-- - Esto filtrará solo anomalías críticas (>15 errores/minuto)
 -- ============================================================================
 
 
