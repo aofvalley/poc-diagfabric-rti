@@ -25,6 +25,7 @@ bronze_pssql_alllogs_nometrics
 // ============================================================================
 // ANOMALÍA 1: Extracción Masiva de Datos (High SELECT Activity)
 // ============================================================================
+// VERSIÓN STANDALONE para dashboards RTI (sessionInfo como subquery inline)
 
 let suspiciousDataAccess = 
 bronze_pssql_alllogs_nometrics
@@ -44,18 +45,25 @@ bronze_pssql_alllogs_nometrics
     DirectDatabase = extract(@"database=([^\s,]+)", 1, message),
     DirectHost = extract(@"host=([^\s]+)", 1, message)
 | where AuditOperation == "READ" or AuditStatement == "SELECT"
-// Correlación con sessionInfo para obtener User/Database/Host
-| join kind=leftouter sessionInfo on processId, LogicalServerName
+// Correlación con sessionInfo (inline) para obtener User/Database/Host
+| join kind=leftouter (
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(24h)
+    | where message contains "connection authorized" or message contains "connection received"
+    | extend 
+        UserName = extract(@"user=([^\s,]+)", 1, message),
+        DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+        ClientHost = extract(@"host=([^\s]+)", 1, message)
+    | where isnotempty(UserName)
+    | summarize User = any(UserName), Database = any(DatabaseName), SourceHost = any(ClientHost)
+        by processId, LogicalServerName
+) on processId, LogicalServerName
 | extend
     // Priorizar extracción directa, luego sessionInfo, finalmente "UNKNOWN"
     FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN")),
     FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, iff(isnotempty(Database), Database, "UNKNOWN")),
     FinalHost = iff(isnotempty(DirectHost), DirectHost, iff(isnotempty(SourceHost), SourceHost, "UNKNOWN"))
-| extend
-    // Priorizar extracción directa, luego sessionInfo, finalmente "UNKNOWN"
-    FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN")),
-    FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, iff(isnotempty(Database), Database, "UNKNOWN")),
-    FinalHost = iff(isnotempty(DirectHost), DirectHost, iff(isnotempty(SourceHost), SourceHost, "UNKNOWN"))
+| where FinalUser != "azuresu"  // Filtrar usuario de monitoreo de la plataforma
 | summarize 
     SelectCount = count(),
     FirstSeen = min(EventProcessedUtcTime),
@@ -88,6 +96,7 @@ suspiciousDataAccess
 // ============================================================================
 // ANOMALÍA 2: Operaciones Destructivas Masivas
 // ============================================================================
+// VERSIÓN STANDALONE para dashboards RTI (sessionInfo como subquery inline)
 
 let destructiveOperations = 
 bronze_pssql_alllogs_nometrics
@@ -107,8 +116,19 @@ bronze_pssql_alllogs_nometrics
 | where AuditStatement in ("DELETE", "UPDATE", "TRUNCATE", "DROP") 
     or QueryText contains "DROP TABLE" 
     or QueryText contains "DROP DATABASE"
-// Correlación con sessionInfo para obtener User/Database/Host
-| join kind=leftouter sessionInfo on processId, LogicalServerName
+// Correlación con sessionInfo (inline) para obtener User/Database/Host
+| join kind=leftouter (
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(24h)
+    | where message contains "connection authorized" or message contains "connection received"
+    | extend 
+        UserName = extract(@"user=([^\s,]+)", 1, message),
+        DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+        ClientHost = extract(@"host=([^\s]+)", 1, message)
+    | where isnotempty(UserName)
+    | summarize User = any(UserName), Database = any(DatabaseName), SourceHost = any(ClientHost)
+        by processId, LogicalServerName
+) on processId, LogicalServerName
 | extend
     // Priorizar extracción directa, luego sessionInfo, finalmente "UNKNOWN"
     FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN")),
@@ -148,6 +168,7 @@ destructiveOperations
 // ============================================================================
 // ANOMALÍA 3: Escalada de Errores Críticos
 // ============================================================================
+// VERSIÓN STANDALONE para dashboards RTI (sessionInfo como subquery inline)
 
 let errorSpike = 
 bronze_pssql_alllogs_nometrics
@@ -171,8 +192,19 @@ bronze_pssql_alllogs_nometrics
     DirectUser = extract(@"user=([^\s,]+)", 1, message),
     DirectDatabase = extract(@"database=([^\s,]+)", 1, message),
     DirectHost = extract(@"host=([^\s]+)", 1, message)
-// Correlación con sessionInfo para casos donde no está en el mensaje de error
-| join kind=leftouter sessionInfo on processId, LogicalServerName
+// Correlación con sessionInfo (inline) para casos donde no está en el mensaje de error
+| join kind=leftouter (
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(24h)
+    | where message contains "connection authorized" or message contains "connection received"
+    | extend 
+        UserName = extract(@"user=([^\s,]+)", 1, message),
+        DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+        ClientHost = extract(@"host=([^\s]+)", 1, message)
+    | where isnotempty(UserName)
+    | summarize User = any(UserName), Database = any(DatabaseName), SourceHost = any(ClientHost)
+        by processId, LogicalServerName
+) on processId, LogicalServerName
 | extend
     FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN")),
     FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, iff(isnotempty(Database), Database, "UNKNOWN")),
@@ -401,24 +433,28 @@ bronze_pssql_alllogs_nometrics
 
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(24h)
-| extend ClientHost = extract(@"host=([^\s]+)", 1, message)
+| extend 
+    ClientHost = extract(@"host=([^\s]+)", 1, message),
+    UserName = extract(@"user=([^\s,]+)", 1, message)
 | where isnotempty(ClientHost)
 | summarize 
     TotalConnections = count(),
-    UniqueUsers = dcount(extract(@"user=([^\s,]+)", 1, message)),
+    UniqueUsers = dcount(UserName),
+    Users = make_set(UserName, 10),  // Lista de usuarios que se conectan desde este host
     Errors = countif(errorLevel in ("ERROR", "FATAL")),
     FirstSeen = min(EventProcessedUtcTime),
     LastSeen = max(EventProcessedUtcTime)
     by ClientHost
 | extend 
+    UsersDisplay = strcat_array(Users, ", "),  // Convertir array a string legible
     ErrorRate = round((todouble(Errors) / TotalConnections) * 100, 2),
     Riesgo = case(
-        ErrorRate > 20, "HIGH",
-        ErrorRate > 5, "MEDIUM",
+        round((todouble(Errors) / TotalConnections) * 100, 2) > 20, "HIGH",
+        round((todouble(Errors) / TotalConnections) * 100, 2) > 5, "MEDIUM",
         "LOW"
     )
 | top 10 by TotalConnections desc
-| project ClientHost, TotalConnections, UniqueUsers, Errors, ErrorRate, Riesgo, FirstSeen, LastSeen;
+| project ClientHost, TotalConnections, UniqueUsers, UsersDisplay, Errors, ErrorRate, Riesgo, FirstSeen, LastSeen;
 
 
 // ----------------------------------------------------------------------------
@@ -494,8 +530,19 @@ bronze_pssql_alllogs_nometrics
 | extend 
     AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
     AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message)
-// Correlación para identificar el usuario
-| join kind=leftouter sessionInfo on processId, LogicalServerName
+// Correlación para identificar el usuario (inline)
+| join kind=leftouter (
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(24h)
+    | where message contains "connection authorized" or message contains "connection received"
+    | extend 
+        UserName = extract(@"user=([^\s,]+)", 1, message),
+        DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+        ClientHost = extract(@"host=([^\s]+)", 1, message)
+    | where isnotempty(UserName)
+    | summarize User = any(UserName), Database = any(DatabaseName), SourceHost = any(ClientHost)
+        by processId, LogicalServerName
+) on processId, LogicalServerName
 | summarize 
     AccessCount = count(),
     Operations = make_set(AuditStatement),
