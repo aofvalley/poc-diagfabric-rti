@@ -25,13 +25,18 @@ Monitorización en tiempo real y detección automática de anomalías de segurid
 ├── README.md                           # Este archivo
 ├── TEST-ANOMALY-TRIGGERS.sql           # Script de pruebas para demo
 │
+├── scripts/
+│   ├── Deploy-FabricSolution.ps1       # 🚀 Despliegue completo (Eventhouse + DB)
+│   └── Setup-KqlSchema.ps1             # ⚡ Solo schema KQL
+│
 ├── queries/
 │   ├── kql-queries-PRODUCTION.kql      # ⭐ Queries principales (7 anomalías)
 │   └── ANOMALY-DETECTION-SETUP.kql     # Setup ML con métricas mejoradas
 │
 └── docs/
+    ├── DEPLOYMENT.md                   # 🚀 Guía de despliegue
     ├── QUICKSTART.md                   # ⚡ Guía rápida
-    ├── ADVANCED-ANOMALIES.md           # 🔴 NEW: Guía anomalías avanzadas
+    ├── ADVANCED-ANOMALIES.md           # 🔴 Guía anomalías avanzadas
     ├── DATA-AGENT-INSTRUCTIONS.md      # Instrucciones para agente IA
     └── DATA-SOURCE-INSTRUCTIONS.md     # Documentación de la tabla
 ```
