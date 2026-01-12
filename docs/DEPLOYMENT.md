@@ -2,45 +2,68 @@
 
 ## Prerequisites
 
-1. **Azure CLI** installed and logged in (`az login`)
-2. **Fabric Workspace** with Real-Time Intelligence enabled
+1. **Fabric CLI (fab)** installed
+   ```bash
+   pip install ms-fabric-cli
+   ```
+
+2. **Authenticated** to Fabric
+   ```bash
+   fab auth login
+   ```
+
 3. **Azure PostgreSQL** with pgaudit enabled and Diagnostic Settings configured
 
 ---
 
-## Quick Deployment (3 steps)
+## Quick Deployment
 
-### Option A: Using PowerShell Scripts
+### Using Fabric CLI (recommended)
 
-```powershell
-# 1. Run full deployment (creates Eventhouse + KQL Database)
-.\scripts\Deploy-FabricSolution.ps1 -WorkspaceId "your-workspace-guid"
+```bash
+# Bash/Linux/Mac
+./scripts/deploy-fabric.sh "MyWorkspace"
 
-# Or, if you already have a KQL Database:
-# 2. Just setup the schema
-.\scripts\Setup-KqlSchema.ps1 `
-    -ClusterUri "https://your-eventhouse.kusto.fabric.microsoft.com" `
-    -DatabaseName "SecurityLogs"
+# PowerShell/Windows
+.\scripts\deploy-fabric.ps1 -WorkspaceName "MyWorkspace"
 ```
 
-### Option B: Manual Setup in Fabric Portal
+The script will:
+1. Create Eventhouse `PostgreSQLMonitor`
+2. Create KQL Database `SecurityLogs`
+3. Deploy tables and functions from `ANOMALY-DETECTION-SETUP.kql`
+
+---
+
+### Manual Deployment
+
+If you prefer to set up manually:
 
 1. **Create Eventhouse**
-   - Fabric Portal → Workspace → New → Eventhouse
-   - Name: `PostgreSQLMonitor`
+   ```bash
+   fab cd "MyWorkspace"
+   fab mkdir "PostgreSQLMonitor.Eventhouse"
+   ```
 
-2. **Create Event Stream**
-   - New → Eventstream
-   - Source: Azure Event Hub (from PostgreSQL Diagnostic Settings)
-   - Destination: KQL Database table `bronze_pssql_alllogs_nometrics`
+2. **Create KQL Database**
+   ```bash
+   fab cd "PostgreSQLMonitor.Eventhouse"
+   fab mkdir "SecurityLogs.KQLDatabase"
+   ```
 
 3. **Run KQL Setup**
-   - Open your KQL Database
-   - Copy/paste commands from `queries/ANOMALY-DETECTION-SETUP.kql`
+   ```bash
+   fab cd "SecurityLogs.KQLDatabase"
+   fab run --file queries/ANOMALY-DETECTION-SETUP.kql
+   ```
 
-4. **Create Dashboard**
+4. **Create Event Stream** (in Fabric Portal)
+   - Source: Azure Event Hub (from PostgreSQL Diagnostic Settings)
+   - Destination: `bronze_pssql_alllogs_nometrics` table
+
+5. **Create Dashboard** (in Fabric Portal)
    - New → Real-Time Dashboard
-   - Add tiles using queries from `queries/kql-queries-PRODUCTION.kql`
+   - Add tiles using `queries/kql-queries-PRODUCTION.kql`
 
 ---
 
@@ -52,7 +75,7 @@ bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(5m)
 | count
 
-// Check metrics table is being populated
+// Check metrics table
 postgres_activity_metrics
 | order by Timestamp desc
 | take 10
@@ -62,9 +85,9 @@ postgres_activity_metrics
 
 ## Test Anomaly Detection
 
-Execute `TEST-ANOMALY-TRIGGERS.sql` in your PostgreSQL:
-- **Tests 1-4**: Basic anomalies (Data Exfiltration, Destructive Ops, Error Spike)
-- **Tests 5-8**: Advanced anomalies (Privilege Escalation, Cross-Schema, Deep Enum)
+Execute `TEST-ANOMALY-TRIGGERS.sql` in PostgreSQL:
+- **Tests 1-4**: Basic anomalies
+- **Tests 5-8**: Advanced anomalies (Defender-proof)
 
 ---
 
@@ -72,6 +95,7 @@ Execute `TEST-ANOMALY-TRIGGERS.sql` in your PostgreSQL:
 
 | Issue | Solution |
 |-------|----------|
-| No data in logs table | Check Event Stream is running |
-| User/Database = UNKNOWN | Enable pgaudit (`SHOW pgaudit.log;`) |
+| `fab` not found | `pip install ms-fabric-cli` |
+| Not authenticated | `fab auth login` |
+| No data in logs | Check Event Stream is running |
 | ML not detecting | Need 7+ days of data |

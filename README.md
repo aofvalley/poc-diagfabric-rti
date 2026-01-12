@@ -26,8 +26,8 @@ Monitorización en tiempo real y detección automática de anomalías de segurid
 ├── TEST-ANOMALY-TRIGGERS.sql           # Script de pruebas para demo
 │
 ├── scripts/
-│   ├── Deploy-FabricSolution.ps1       # 🚀 Despliegue completo (Eventhouse + DB)
-│   └── Setup-KqlSchema.ps1             # ⚡ Solo schema KQL
+│   ├── deploy-fabric.ps1               # 🚀 Deploy con Fabric CLI (Windows)
+│   └── deploy-fabric.sh                # 🚀 Deploy con Fabric CLI (Linux/Mac)
 │
 ├── queries/
 │   ├── kql-queries-PRODUCTION.kql      # ⭐ Queries principales (7 anomalías)
