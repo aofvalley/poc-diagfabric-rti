@@ -1,48 +1,72 @@
 // ============================================================================
-// SETUP: ML Anomaly Detection para PostgreSQL Monitoring
+// SETUP: ML Anomaly Detection para PostgreSQL Monitoring (v3 Enhanced)
 // ============================================================================
-// Este script crea la infraestructura necesaria para usar Anomaly Detector
-// en Fabric Real-Time Intelligence
+// Este script crea la infraestructura para detección de anomalías con ML
+// usando series_decompose_anomalies() en Fabric Real-Time Intelligence
+// ============================================================================
+// 
+// 🔴 MEJORAS v3:
+// - HourOfDay y DayOfWeek para detectar patrones temporales
+// - Desglose de operaciones (SELECT, WRITE, DDL, Privilege)
+// - UniqueUsers para detectar cardinalidad anormal
+// - PrivilegeOps para rastrear GRANTs/REVOKEs sospechosos
 // ============================================================================
 
 // ============================================================================
-// PASO 1: Crear tabla de métricas agregadas (destino)
+// PASO 1: Crear tabla de métricas agregadas (destino) - VERSIÓN MEJORADA
 // ============================================================================
-// Esta tabla almacena métricas cada 5 minutos para alimentar el ML
 
 .create table postgres_activity_metrics (
     Timestamp: datetime,
     ServerName: string,
+    HourOfDay: int,              // 0-23 para patrones horarios
+    DayOfWeek: int,              // 0=Dom, 1=Lun, ..., 6=Sab
     ActivityCount: long,
     AuditLogs: long,
     Errors: long,
-    Connections: long
+    Connections: long,
+    UniqueUsers: long,           // Usuarios distintos activos
+    SelectOps: long,             // Operaciones de lectura
+    WriteOps: long,              // INSERT/UPDATE/DELETE
+    DDLOps: long,                // CREATE/DROP/ALTER
+    PrivilegeOps: long           // GRANT/REVOKE (alertas de escalada)
 )
 
 
 // ============================================================================
-// PASO 2: Crear función de agregación (transformación)
+// PASO 2: Crear función de agregación MEJORADA (más dimensiones)
 // ============================================================================
-// Esta función toma los logs raw y los agrega cada 5 minutos
 
 .create-or-alter function postgres_activity_metrics_transform() {
     bronze_pssql_alllogs_nometrics
     | where category == "PostgreSQLLogs"
+    | extend 
+        HourOfDay = hourofday(EventProcessedUtcTime),
+        DayOfWeek = dayofweek(EventProcessedUtcTime) / 1d,
+        UserName = extract(@"user=([^\s,]+)", 1, message)
     | summarize 
         ActivityCount = count(),
         AuditLogs = countif(message contains "AUDIT:"),
         Errors = countif(errorLevel in ("ERROR", "FATAL", "PANIC")),
-        Connections = countif(message contains "connection authorized")
-        by ServerName = LogicalServerName, Timestamp = bin(EventProcessedUtcTime, 5m)
-    | project Timestamp, ServerName, ActivityCount, AuditLogs, Errors, Connections
+        Connections = countif(message contains "connection authorized"),
+        UniqueUsers = dcount(UserName),
+        SelectOps = countif(message has_any ("SELECT", "COPY", ",READ,")),
+        WriteOps = countif(message has_any ("INSERT", "UPDATE", "DELETE", ",WRITE,")),
+        DDLOps = countif(message has_any ("CREATE", "DROP", "ALTER TABLE", "ALTER INDEX")),
+        PrivilegeOps = countif(message has_any ("GRANT", "REVOKE", "ALTER ROLE", "CREATE ROLE"))
+        by ServerName = LogicalServerName, 
+           Timestamp = bin(EventProcessedUtcTime, 5m),
+           HourOfDay = hourofday(EventProcessedUtcTime),
+           DayOfWeek = toint(dayofweek(EventProcessedUtcTime) / 1d)
+    | project Timestamp, ServerName, HourOfDay, DayOfWeek, 
+              ActivityCount, AuditLogs, Errors, Connections,
+              UniqueUsers, SelectOps, WriteOps, DDLOps, PrivilegeOps
 }
 
 
 // ============================================================================
 // PASO 3: Crear Update Policy (pipeline automático)
 // ============================================================================
-// Cada vez que llegan datos nuevos a bronze_pssql_alllogs_nometrics,
-// se ejecuta automáticamente la función y actualiza postgres_activity_metrics
 
 .alter table postgres_activity_metrics policy update 
 @'[{"IsEnabled": true, "Source": "bronze_pssql_alllogs_nometrics", "Query": "postgres_activity_metrics_transform()", "IsTransactional": false, "PropagateIngestionProperties": false}]'
@@ -58,13 +82,27 @@
     bronze_pssql_alllogs_nometrics
     | where EventProcessedUtcTime >= ago(30d)
     | where category == "PostgreSQLLogs"
+    | extend 
+        HourOfDay = hourofday(EventProcessedUtcTime),
+        DayOfWeek = toint(dayofweek(EventProcessedUtcTime) / 1d),
+        UserName = extract(@"user=([^\s,]+)", 1, message)
     | summarize 
         ActivityCount = count(),
         AuditLogs = countif(message contains "AUDIT:"),
         Errors = countif(errorLevel in ("ERROR", "FATAL", "PANIC")),
-        Connections = countif(message contains "connection authorized")
-        by ServerName = LogicalServerName, Timestamp = bin(EventProcessedUtcTime, 5m)
-    | project Timestamp, ServerName, ActivityCount, AuditLogs, Errors, Connections
+        Connections = countif(message contains "connection authorized"),
+        UniqueUsers = dcount(UserName),
+        SelectOps = countif(message has_any ("SELECT", "COPY", ",READ,")),
+        WriteOps = countif(message has_any ("INSERT", "UPDATE", "DELETE", ",WRITE,")),
+        DDLOps = countif(message has_any ("CREATE", "DROP", "ALTER TABLE")),
+        PrivilegeOps = countif(message has_any ("GRANT", "REVOKE", "ALTER ROLE"))
+        by ServerName = LogicalServerName, 
+           Timestamp = bin(EventProcessedUtcTime, 5m),
+           HourOfDay = hourofday(EventProcessedUtcTime),
+           DayOfWeek = toint(dayofweek(EventProcessedUtcTime) / 1d)
+    | project Timestamp, ServerName, HourOfDay, DayOfWeek,
+              ActivityCount, AuditLogs, Errors, Connections,
+              UniqueUsers, SelectOps, WriteOps, DDLOps, PrivilegeOps
 
 
 // ============================================================================

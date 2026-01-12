@@ -241,13 +241,276 @@ errorSpike
 
 
 // ============================================================================
-// DASHBOARD PRINCIPAL: Todas las Anomalías
+// ============================================================================
+//                    🔴 ADVANCED ANOMALIES (v3)
+//              Patterns that Defender/SIEM CANNOT detect
+// ============================================================================
+// ============================================================================
+
+
+// ============================================================================
+// ANOMALÍA 4: Escalada de Privilegios (Privilege Escalation)
+// ============================================================================
+// Detecta secuencias de GRANT/REVOKE/ALTER ROLE sospechosas
+// Threshold: >3 operaciones de privilegios en 5 minutos
+
+let privilegeEscalation = 
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(10m)
+| where category == "PostgreSQLLogs"
+| where message contains "AUDIT:"
+| where message has_any ("GRANT", "REVOKE", "ALTER ROLE", "CREATE ROLE", "DROP ROLE")
+| extend 
+    PrivilegeOp = case(
+        message contains "GRANT", "GRANT",
+        message contains "REVOKE", "REVOKE",
+        message contains "ALTER ROLE", "ALTER ROLE",
+        message contains "CREATE ROLE", "CREATE ROLE",
+        message contains "DROP ROLE", "DROP ROLE",
+        "OTHER"
+    ),
+    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message)),
+    DirectUser = extract(@"user=([^\s,]+)", 1, message)
+// Correlación para identificar el usuario
+| join kind=leftouter (
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(24h)
+    | where message contains "connection authorized" or message contains "connection received"
+    | extend UserName = extract(@"user=([^\s,]+)", 1, message)
+    | where isnotempty(UserName)
+    | summarize User = any(UserName) by processId, LogicalServerName
+) on processId, LogicalServerName
+| extend FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN"))
+| where FinalUser != "azuresu"
+| summarize 
+    PrivilegeOpsCount = count(),
+    Operations = make_set(PrivilegeOp),
+    FirstOp = min(EventProcessedUtcTime),
+    LastOp = max(EventProcessedUtcTime),
+    SampleQueries = make_set(QueryText, 3),
+    User = any(FinalUser)
+    by LogicalServerName, bin(EventProcessedUtcTime, 5m)
+| where PrivilegeOpsCount > 3  // Más de 3 operaciones de privilegios en 5 minutos
+| extend 
+    AnomalyType = "Privilege Escalation",
+    Severity = case(
+        PrivilegeOpsCount > 10, "CRITICAL",
+        PrivilegeOpsCount > 5, "HIGH",
+        "MEDIUM"
+    )
+| project 
+    TimeGenerated = LastOp,
+    AnomalyType,
+    Severity,
+    ServerName = LogicalServerName,
+    User,
+    PrivilegeOpsCount,
+    Operations,
+    TimeWindow = strcat(FirstOp, " to ", LastOp),
+    SampleQueries;
+
+privilegeEscalation
+
+
+// ============================================================================
+// ANOMALÍA 5: Reconocimiento Cross-Schema (Lateral Movement)
+// ============================================================================
+// Detecta acceso a múltiples schemas en poco tiempo
+// Threshold: >4 schemas diferentes accedidos en 10 minutos
+
+let crossSchemaRecon = 
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(15m)
+| where category == "PostgreSQLLogs"
+| where message contains "AUDIT:"
+| where backend_type == "client backend"
+| extend 
+    SchemaAccessed = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^\.]+)\.", 1, message),
+    TableAccessed = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
+    DirectUser = extract(@"user=([^\s,]+)", 1, message)
+| where isnotempty(SchemaAccessed) or isnotempty(TableAccessed)
+| extend SchemaName = iff(isnotempty(SchemaAccessed), SchemaAccessed, 
+    extract(@"^([^\.]+)\.", 1, TableAccessed))
+| where isnotempty(SchemaName) and SchemaName !in ("pg_catalog", "information_schema", "")
+// Correlación para usuario
+| join kind=leftouter (
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(24h)
+    | where message contains "connection authorized"
+    | extend UserName = extract(@"user=([^\s,]+)", 1, message)
+    | where isnotempty(UserName)
+    | summarize User = any(UserName) by processId, LogicalServerName
+) on processId, LogicalServerName
+| extend FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN"))
+| where FinalUser != "azuresu"
+| summarize 
+    SchemasAccessed = dcount(SchemaName),
+    SchemaList = make_set(SchemaName),
+    TablesAccessed = dcount(TableAccessed),
+    FirstAccess = min(EventProcessedUtcTime),
+    LastAccess = max(EventProcessedUtcTime),
+    User = any(FinalUser)
+    by LogicalServerName, processId, bin(EventProcessedUtcTime, 10m)
+| where SchemasAccessed > 4  // Más de 4 schemas = movimiento lateral
+| extend 
+    AnomalyType = "Cross-Schema Reconnaissance",
+    Severity = case(
+        SchemasAccessed > 8, "CRITICAL",
+        SchemasAccessed > 5, "HIGH",
+        "MEDIUM"
+    )
+| project 
+    TimeGenerated = LastAccess,
+    AnomalyType,
+    Severity,
+    ServerName = LogicalServerName,
+    User,
+    SchemasAccessed,
+    SchemaList = strcat_array(SchemaList, ", "),
+    TablesAccessed,
+    TimeWindow = strcat(FirstAccess, " to ", LastAccess);
+
+crossSchemaRecon
+
+
+// ============================================================================
+// ANOMALÍA 6: Enumeración de Schema de Sistema (Deep Scan)
+// ============================================================================
+// Detecta queries masivas a pg_catalog/information_schema
+// Threshold: >10 queries a tablas de sistema en 5 minutos
+
+let deepSchemaEnum = 
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(10m)
+| where category == "PostgreSQLLogs"
+| where message contains "AUDIT:"
+| where backend_type == "client backend"
+| extend QueryText = trim('"', extract(@",,,([^<]+)<", 1, message))
+| where QueryText contains "pg_catalog" 
+    or QueryText contains "information_schema"
+    or QueryText contains "pg_tables"
+    or QueryText contains "pg_class"
+    or QueryText contains "pg_attribute"
+    or QueryText contains "pg_proc"
+    or QueryText contains "pg_type"
+    or QueryText contains "pg_constraint"
+    or QueryText contains "pg_roles"
+| extend 
+    SystemTable = case(
+        QueryText contains "pg_tables", "pg_tables",
+        QueryText contains "pg_class", "pg_class",
+        QueryText contains "pg_attribute", "pg_attribute",
+        QueryText contains "pg_proc", "pg_proc",
+        QueryText contains "pg_type", "pg_type",
+        QueryText contains "pg_constraint", "pg_constraint",
+        QueryText contains "pg_roles", "pg_roles",
+        QueryText contains "pg_indexes", "pg_indexes",
+        QueryText contains "information_schema.tables", "info_tables",
+        QueryText contains "information_schema.columns", "info_columns",
+        QueryText contains "information_schema.routines", "info_routines",
+        "other_system"
+    ),
+    DirectUser = extract(@"user=([^\s,]+)", 1, message)
+// Correlación para usuario
+| join kind=leftouter (
+    bronze_pssql_alllogs_nometrics
+    | where EventProcessedUtcTime >= ago(24h)
+    | where message contains "connection authorized"
+    | extend UserName = extract(@"user=([^\s,]+)", 1, message)
+    | where isnotempty(UserName)
+    | summarize User = any(UserName) by processId, LogicalServerName
+) on processId, LogicalServerName
+| extend FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN"))
+| where FinalUser != "azuresu"
+| summarize 
+    SystemTableQueries = count(),
+    TablesScanned = make_set(SystemTable),
+    UniqueSystemTables = dcount(SystemTable),
+    FirstQuery = min(EventProcessedUtcTime),
+    LastQuery = max(EventProcessedUtcTime),
+    SampleQueries = make_set(QueryText, 3),
+    User = any(FinalUser)
+    by LogicalServerName, processId, bin(EventProcessedUtcTime, 5m)
+| where SystemTableQueries > 10  // Más de 10 queries = reconocimiento profundo
+| extend 
+    AnomalyType = "Deep Schema Enumeration",
+    Severity = case(
+        SystemTableQueries > 30, "CRITICAL",
+        SystemTableQueries > 15, "HIGH",
+        "MEDIUM"
+    ),
+    RiskLevel = iff(UniqueSystemTables > 5, "🔴 HIGH - Multi-table scan", "🟠 MEDIUM")
+| project 
+    TimeGenerated = LastQuery,
+    AnomalyType,
+    Severity,
+    RiskLevel,
+    ServerName = LogicalServerName,
+    User,
+    SystemTableQueries,
+    UniqueSystemTables,
+    TablesScanned = strcat_array(TablesScanned, ", "),
+    TimeWindow = strcat(FirstQuery, " to ", LastQuery);
+
+deepSchemaEnum
+
+
+// ============================================================================
+// ANOMALÍA 7: ML Anomaly Detection - Desviación de Baseline
+// ============================================================================
+// Usa series_decompose_anomalies() para detectar desviación del patrón normal
+// Requiere tabla postgres_activity_metrics configurada
+
+let mlAnomalyDetection = 
+postgres_activity_metrics
+| where Timestamp >= ago(7d)
+| where isnotempty(ServerName)
+| make-series ActivitySeries = sum(ActivityCount) default=0 
+    on Timestamp step 5m 
+    by ServerName
+| extend (anomalies, score, baseline) = 
+    series_decompose_anomalies(ActivitySeries, 1.5, -1, 'linefit')
+| mv-expand Timestamp to typeof(datetime), 
+    ActivitySeries to typeof(long), 
+    anomalies to typeof(int), 
+    score to typeof(double), 
+    baseline to typeof(double)
+| where anomalies != 0  // Solo anomalías (1 = alto, -1 = bajo)
+| where Timestamp >= ago(1h)  // Solo últimas anomalías
+| extend 
+    AnomalyType = "ML Baseline Deviation",
+    AnomalyDirection = iff(anomalies > 0, "📈 Above Normal", "📉 Below Normal"),
+    Severity = case(
+        abs(score) > 3.0, "CRITICAL",
+        abs(score) > 2.0, "HIGH",
+        "MEDIUM"
+    )
+| project 
+    TimeGenerated = Timestamp,
+    AnomalyType,
+    AnomalyDirection,
+    Severity,
+    ServerName,
+    ActivityCount = ActivitySeries,
+    ExpectedBaseline = round(baseline, 0),
+    DeviationScore = round(score, 2)
+| order by abs(DeviationScore) desc
+| take 20;
+
+mlAnomalyDetection
+
+
+// ============================================================================
+// DASHBOARD PRINCIPAL: Todas las Anomalías (Incluyendo Avanzadas)
 // ============================================================================
 
 union
     (suspiciousDataAccess),
     (destructiveOperations),
-    (errorSpike)
+    (errorSpike),
+    (privilegeEscalation),
+    (crossSchemaRecon),
+    (deepSchemaEnum)
 | order by TimeGenerated desc
 | take 100;
 

@@ -454,6 +454,211 @@ print("   - ThreatLevel: 🔴 CRITICAL")
 
 
 -- ============================================================================
+-- ============================================================================
+--                    🔴 ADVANCED ANOMALY TESTS (v3)
+--              Patterns that Defender/SIEM CANNOT detect
+-- ============================================================================
+-- ============================================================================
+-- These tests simulate sophisticated attack patterns that require:
+-- ✅ Behavioral baseline analysis (ML-based)
+-- ✅ Cross-signal correlation (user + time + query type)
+-- ✅ Historical pattern comparison (impossible for rule-based SIEM)
+--
+-- Defender/SIEM would see these as "normal" individual events because:
+-- ❌ They don't know your business hours
+-- ❌ They can't establish per-user baselines
+-- ❌ They lack context about normal privilege patterns
+-- ❌ They process events in isolation, not as behavioral sequences
+-- ============================================================================
+
+
+-- ============================================================================
+-- TEST 5: ANOMALÍA AVANZADA - Acceso Fuera de Horario (Off-Hours Access)
+-- ============================================================================
+-- 📊 Requisito: Detectar acceso a horas inusuales para el usuario
+--             (Query: series_decompose_anomalies en métricas por hora)
+-- 🎯 Estrategia: Simular actividad en horario atípico
+-- 
+-- ⚠️ POR QUÉ DEFENDER NO LO DETECTA:
+--    - Defender ve "usuario X ejecutó SELECT" = evento normal ✅
+--    - NO sabe que este usuario NUNCA trabaja a las 3 AM
+--    - NO tiene baseline del patrón horario de cada usuario
+--    - Solo Fabric ML con series_decompose_anomalies puede detectarlo
+--
+-- 📈 Resultado esperado en dashboard (con ML configurado):
+--    - AnomalyType: Off-Hours Access
+--    - HourOfDay: Hora actual
+--    - User: Tu usuario
+--    - DeviationScore: >1.5 (si es hora anormal para tu patrón)
+-- ============================================================================
+
+-- 🕐 FASE 1: Ejecutar queries que serán analizadas por patrones horarios
+SELECT current_timestamp as access_time, 'OFF-HOURS TEST' as test_type;
+
+-- Accesos a datos sensibles (sospechoso si es off-hours)
+SELECT * FROM person.person WHERE businessentityid < 10;
+SELECT * FROM sales.customer WHERE customerid < 20;
+SELECT * FROM humanresources.employee LIMIT 5;
+SELECT * FROM sales.salesorderheader WHERE totaldue > 10000 LIMIT 10;
+
+-- Queries de reconocimiento en off-hours (más sospechoso)
+SELECT tablename, schemaname FROM pg_catalog.pg_tables 
+    WHERE schemaname NOT IN ('pg_catalog', 'information_schema');
+SELECT column_name, data_type FROM information_schema.columns 
+    WHERE table_schema = 'sales' LIMIT 10;
+
+-- ✅ TOTAL: 7 queries para análisis de patrón horario
+-- 🎬 DEMO TIP: Ejecutar a diferentes horas y mostrar cómo ML detecta desviación
+-- ============================================================================
+
+
+-- ============================================================================
+-- TEST 6: ANOMALÍA AVANZADA - Escalada de Privilegios (Privilege Escalation)
+-- ============================================================================
+-- 📊 Requisito: Detectar >3 operaciones de privilegios en 5 minutos
+--             (GRANT, REVOKE, ALTER ROLE, CREATE ROLE)
+-- 🎯 Estrategia: Ejecutar secuencia de GRANTs sospechosa
+-- 
+-- ⚠️ POR QUÉ DEFENDER NO LO DETECTA:
+--    - Defender ve "GRANT SELECT TO user" = operación de admin normal ✅
+--    - NO detecta la VELOCIDAD (5 GRANTs en 2 minutos = sospechoso)
+--    - NO detecta el PATRÓN (mismo usuario otorgando permisos a sí mismo)
+--    - NO correlaciona con el rol del usuario (¿es realmente admin?)
+--
+-- 📈 Resultado esperado en dashboard:
+--    - AnomalyType: Privilege Escalation
+--    - PrivilegeOpsCount: 5+
+--    - Operations: GRANT, REVOKE, CREATE ROLE
+--    - TargetRoles: Lista de roles afectados
+-- ============================================================================
+
+-- 🏗️ PREPARACIÓN: Crear roles temporales para pruebas
+DROP ROLE IF EXISTS test_analyst_v3;
+DROP ROLE IF EXISTS test_developer_v3;  
+DROP ROLE IF EXISTS test_admin_v3;
+
+CREATE ROLE test_analyst_v3;
+CREATE ROLE test_developer_v3;
+CREATE ROLE test_admin_v3;
+
+-- ⚠️ FASE SOSPECHOSA: Ejecutar 6 operaciones de privilegios EN MENOS DE 5 MINUTOS
+GRANT SELECT ON ALL TABLES IN SCHEMA sales TO test_analyst_v3;
+GRANT INSERT, UPDATE ON ALL TABLES IN SCHEMA sales TO test_developer_v3;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA sales TO test_admin_v3;
+GRANT test_analyst_v3 TO test_developer_v3;  -- Escalada: developer hereda analyst
+GRANT test_developer_v3 TO test_admin_v3;    -- Escalada: admin hereda developer
+REVOKE ALL ON SCHEMA public FROM test_analyst_v3;  -- Revocación sospechosa
+
+-- ✅ TOTAL: 6 operaciones de privilegios en ráfaga
+-- 🎬 DEMO TIP: Cada GRANT individual es normal, pero 6 en 2 min = ataque
+
+-- 🧹 LIMPIEZA: Eliminar roles de prueba
+DROP ROLE IF EXISTS test_analyst_v3;
+DROP ROLE IF EXISTS test_developer_v3;
+DROP ROLE IF EXISTS test_admin_v3;
+-- ============================================================================
+
+
+-- ============================================================================
+-- TEST 7: ANOMALÍA AVANZADA - Reconocimiento Cross-Database
+-- ============================================================================
+-- 📊 Requisito: Detectar mismo usuario accediendo >3 schemas en 10 minutos
+--             (Patrón de movimiento lateral)
+-- 🎯 Estrategia: Ejecutar queries que acceden a múltiples schemas
+-- 
+-- ⚠️ POR QUÉ DEFENDER NO LO DETECTA:
+--    - Defender ve "SELECT from sales.X" = query normal ✅
+--    - NO correlaciona que el mismo usuario accedió 5 schemas diferentes
+--    - NO tiene contexto de que este usuario normalmente usa 1 schema
+--    - Movimiento lateral es invisible sin análisis cross-schema
+--
+-- 📈 Resultado esperado en dashboard:
+--    - AnomalyType: Cross-Database Reconnaissance
+--    - SchemasAccessed: 5+
+--    - TimeWindow: <10 minutos
+--    - AccessPattern: Lateral Movement Indicator
+-- ============================================================================
+
+-- 🔍 Queries que acceden a múltiples schemas en ráfaga
+SELECT datname, encoding FROM pg_database WHERE datistemplate = false;
+SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%';
+
+-- Acceso a diferentes schemas de negocio
+SELECT * FROM sales.customer LIMIT 1;
+SELECT * FROM production.product LIMIT 1;
+SELECT * FROM person.person LIMIT 1;
+SELECT * FROM humanresources.employee LIMIT 1;
+SELECT * FROM purchasing.vendor LIMIT 1;
+
+-- Queries de reconocimiento de estructura multi-schema
+SELECT table_schema, COUNT(*) as table_count 
+FROM information_schema.tables 
+WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+GROUP BY table_schema;
+
+-- ✅ TOTAL: 8 queries de reconocimiento cross-schema
+-- 🎬 DEMO TIP: Usuario normal = 1-2 schemas. 5+ schemas = mapeo de atacante
+-- ============================================================================
+
+
+-- ============================================================================
+-- TEST 8: ANOMALÍA AVANZADA - Enumeración Profunda de Schema
+-- ============================================================================
+-- 📊 Requisito: Detectar >10 queries a tablas de sistema en 5 minutos
+--             (pg_catalog, information_schema, pg_proc, pg_type)
+-- 🎯 Estrategia: Ejecutar reconocimiento exhaustivo del schema
+-- 
+-- ⚠️ POR QUÉ DEFENDER NO LO DETECTA:
+--    - Defender ve "SELECT from pg_tables" = query de metadata ✅
+--    - NO detecta la PROFUNDIDAD (atacante mapeando TODA la estructura)
+--    - NO detecta la SECUENCIA (pg_tables → pg_columns → pg_proc)
+--    - Este patrón es preparación para SQL injection o exfiltración
+--
+-- 📈 Resultado esperado en dashboard:
+--    - AnomalyType: Deep Schema Enumeration
+--    - SystemTableQueries: 15+
+--    - TablesScanned: pg_tables, pg_columns, pg_proc, pg_type...
+--    - RiskLevel: HIGH (precursor de ataque)
+-- ============================================================================
+
+-- 🔍 FASE 1: Mapeo de estructura de tablas
+SELECT schemaname, tablename, tableowner FROM pg_tables 
+    WHERE schemaname NOT LIKE 'pg_%' LIMIT 5;
+SELECT table_schema, table_name, table_type FROM information_schema.tables 
+    WHERE table_schema NOT LIKE 'pg_%' LIMIT 5;
+SELECT relname, relkind FROM pg_class WHERE relkind = 'r' LIMIT 5;
+
+-- 🔍 FASE 2: Mapeo de columnas (para saber qué datos robar)
+SELECT column_name, data_type, is_nullable FROM information_schema.columns 
+    WHERE table_schema = 'sales' LIMIT 10;
+SELECT attname, atttypid FROM pg_attribute 
+    WHERE attrelid = 'sales.customer'::regclass AND attnum > 0 LIMIT 5;
+
+-- 🔍 FASE 3: Mapeo de funciones y procedimientos
+SELECT proname, pronargs FROM pg_proc WHERE pronamespace != 11 LIMIT 5;
+SELECT routine_name, routine_type FROM information_schema.routines 
+    WHERE routine_schema NOT IN ('pg_catalog', 'information_schema') LIMIT 5;
+
+-- 🔍 FASE 4: Mapeo de constraints y relaciones
+SELECT conname, contype FROM pg_constraint LIMIT 5;
+SELECT constraint_name, table_name, constraint_type FROM information_schema.table_constraints 
+    WHERE table_schema = 'sales' LIMIT 5;
+SELECT indexname FROM pg_indexes WHERE schemaname = 'sales' LIMIT 5;
+
+-- 🔍 FASE 5: Información de usuarios y permisos
+SELECT rolname, rolsuper FROM pg_roles LIMIT 5;
+SELECT grantee, privilege_type, table_name FROM information_schema.table_privileges 
+    WHERE table_schema = 'sales' LIMIT 5;
+
+-- ✅ TOTAL: 15+ queries a tablas de sistema en secuencia
+-- 🎬 DEMO TIP: 
+--    - "Cada query parece inocente"
+--    - "La SECUENCIA revela intención: mapear toda la BD"
+--    - "Defender ve 15 queries normales, Fabric ve 1 ataque coordinado"
+-- ============================================================================
+
+
+-- ============================================================================
 -- LIMPIEZA POST-DEMO
 -- ============================================================================
 -- ⚠️ EJECUTAR DESPUÉS DE LA DEMO PARA ELIMINAR TABLA TEMPORAL
