@@ -41,8 +41,8 @@
     bronze_pssql_alllogs_nometrics
     | where category == "PostgreSQLLogs"
     | extend 
-        HourOfDay = hourofday(EventProcessedUtcTime),
-        DayOfWeek = dayofweek(EventProcessedUtcTime) / 1d,
+        HourOfDay = toint(hourofday(EventProcessedUtcTime)),  // Cast a int para coincidir con esquema
+        DayOfWeek = toint(dayofweek(EventProcessedUtcTime) / 1d),
         UserName = extract(@"user=([^\s,]+)", 1, message)
     | summarize 
         ActivityCount = count(),
@@ -56,7 +56,7 @@
         PrivilegeOps = countif(message has_any ("GRANT", "REVOKE", "ALTER ROLE", "CREATE ROLE"))
         by ServerName = LogicalServerName, 
            Timestamp = bin(EventProcessedUtcTime, 5m),
-           HourOfDay = hourofday(EventProcessedUtcTime),
+           HourOfDay = toint(hourofday(EventProcessedUtcTime)),  // Cast a int
            DayOfWeek = toint(dayofweek(EventProcessedUtcTime) / 1d)
     | project Timestamp, ServerName, HourOfDay, DayOfWeek, 
               ActivityCount, AuditLogs, Errors, Connections,
@@ -83,7 +83,7 @@
     | where EventProcessedUtcTime >= ago(30d)
     | where category == "PostgreSQLLogs"
     | extend 
-        HourOfDay = hourofday(EventProcessedUtcTime),
+        HourOfDay = toint(hourofday(EventProcessedUtcTime)),  // Cast a int
         DayOfWeek = toint(dayofweek(EventProcessedUtcTime) / 1d),
         UserName = extract(@"user=([^\s,]+)", 1, message)
     | summarize 
@@ -98,7 +98,7 @@
         PrivilegeOps = countif(message has_any ("GRANT", "REVOKE", "ALTER ROLE"))
         by ServerName = LogicalServerName, 
            Timestamp = bin(EventProcessedUtcTime, 5m),
-           HourOfDay = hourofday(EventProcessedUtcTime),
+           HourOfDay = toint(hourofday(EventProcessedUtcTime)),  // Cast a int
            DayOfWeek = toint(dayofweek(EventProcessedUtcTime) / 1d)
     | project Timestamp, ServerName, HourOfDay, DayOfWeek,
               ActivityCount, AuditLogs, Errors, Connections,

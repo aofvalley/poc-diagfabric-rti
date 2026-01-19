@@ -1,10 +1,10 @@
 -- ============================================================================
 -- SCRIPT DE PRUEBA: Generar Anomalías para Dashboard PostgreSQL
 -- ============================================================================
--- Propósito: Ejecutar queries que activen las 3 anomalías del dashboard
+-- Propósito: Ejecutar queries que activen las 7 anomalías del dashboard v3
 -- Base de datos: adventureworks (con pgaudit habilitado)
 -- Ejecutar con: psql o Azure Data Studio
--- Versión: 2.0 (Validada 20/11/2025 - Alineada con queries PRODUCTION)
+-- Versión: 3.0 (Actualizada 19/01/2026 - Alineada con queries PRODUCTION v3)
 -- ============================================================================
 --
 -- 📋 PREREQUISITOS ANTES DE LA DEMO:
@@ -13,17 +13,35 @@
 -- 3. ✅ Diagnostic Settings habilitado en Azure Portal (PostgreSQLLogs enabled)
 -- 4. ✅ Event Stream funcionando en Fabric (verificar ingesta)
 -- 5. ✅ Tabla bronze_pssql_alllogs_nometrics recibiendo datos
--- 6. ✅ Dashboard creado con queries de kql-queries-PRODUCTION.kql
--- 7. ✅ Alertas configuradas en Data Activator (opcional para demo)
+-- 6. ✅ Tabla postgres_activity_metrics creada (para Anomalía 7 ML)
+-- 7. ✅ Dashboard creado con queries de kql-queries-PRODUCTION.kql
+-- 8. ✅ Alertas configuradas en Data Activator (opcional para demo)
 --
--- 🎯 FLUJO DE LA DEMO:
+-- ════════════════════════════════════════════════════════════════════════════
+-- 📊 MAPEO DE TESTS → ANOMALÍAS KQL (kql-queries-PRODUCTION.kql)
+-- ════════════════════════════════════════════════════════════════════════════
+-- │ TEST │ ANOMALÍA KQL                    │ THRESHOLD            │ LINEAS KQL │
+-- ├──────┼─────────────────────────────────┼──────────────────────┼────────────┤
+-- │  1   │ Potential Data Exfiltration     │ >15 SELECTs / 5 min  │ 26-95      │
+-- │  2   │ Mass Destructive Operations     │ >5 ops / 2 min       │ 97-166     │
+-- │  3   │ Critical Error Spike            │ (sin threshold/debug)│ 169-245    │
+-- │  4   │ Privilege Escalation            │ >3 priv ops / 5 min  │ 252-314    │
+-- │  5   │ Cross-Schema Reconnaissance     │ >4 schemas / 10 min  │ 316-374    │
+-- │  6   │ Deep Schema Enumeration         │ >10 queries / 5 min  │ 377-455    │
+-- │  7   │ ML Baseline Deviation           │ score > 1.5 (ML)     │ 461-498    │
+-- └──────┴─────────────────────────────────┴──────────────────────┴────────────┘
+--
+-- 🎯 FLUJO DE LA DEMO (orden recomendado):
 -- 1. Ejecutar TEST 1 (Data Exfiltration) → Esperar 1-2 min → Mostrar dashboard
 -- 2. Ejecutar TEST 2 (Destructive Ops) → Esperar 1-2 min → Mostrar dashboard
 -- 3. Ejecutar TEST 3 (Error Spike) → Esperar 1-2 min → Mostrar dashboard
--- 4. (Opcional) Ejecutar TEST 4 (Auth Failures) con script externo
--- 5. Mostrar alertas disparadas en Data Activator (si configuradas)
+-- 4. Ejecutar TEST 4 (Privilege Escalation) → Esperar 1-2 min → Mostrar dashboard
+-- 5. Ejecutar TEST 5 (Cross-Schema Recon) → Esperar 1-2 min → Mostrar dashboard
+-- 6. Ejecutar TEST 6 (Deep Schema Enum) → Esperar 1-2 min → Mostrar dashboard
+-- 7. Ejecutar TEST 7 (ML Baseline) → Esperar 5-10 min → Mostrar dashboard
+-- 8. (Opcional) TEST AUTH (Brute Force) → Con script externo
 --
--- ⏱️ TIEMPO TOTAL DE DEMO: ~10-15 minutos (3-4 min por test + explicación)
+-- ⏱️ TIEMPO TOTAL DE DEMO: ~20-30 minutos (2-3 min por test + explicación)
 -- ============================================================================
 
 -- ============================================================================
@@ -251,13 +269,18 @@ SELECT * FROM tabla_inexistente_18;
 
 
 -- ============================================================================
--- TEST 4: TILE - Fallos de Autenticación (Authentication Failures)
+-- TEST AUTH (OPCIONAL): TILE - Fallos de Autenticación (Brute Force)
 -- ============================================================================
 -- 📊 Requisito: Detectar intentos de brute force (>3 fallos por usuario/host)
---             (Query: kql-queries-PRODUCTION.kql líneas 424-445)
+--             (Query: kql-queries-PRODUCTION.kql líneas 700-730 - TILE 12)
 -- 🎯 Estrategia: Intentar conectarse con contraseña incorrecta 10-20 veces
 -- ⏱️ Tiempo de ejecución: ~1-2 minutos
+-- 
+-- ⚠️ NOTA: Este NO es una Anomalía principal (1-7), es un TILE del dashboard
+--          Pero es útil para demostrar detección de brute force attacks
+--
 -- 📈 Resultado esperado en dashboard:
+--    - TILE "Fallos de Autenticación"
 --    - User: tu_usuario_test
 --    - SourceHost: tu_ip
 --    - FailedAttempts: 10-20
@@ -455,69 +478,30 @@ print("   - ThreatLevel: 🔴 CRITICAL")
 
 -- ============================================================================
 -- ============================================================================
---                    🔴 ADVANCED ANOMALY TESTS (v3)
---              Patterns that Defender/SIEM CANNOT detect
+--                    🔴 ANOMALÍAS AVANZADAS (Tests 4-7)
+--              Patrones que Defender/SIEM NO pueden detectar
 -- ============================================================================
 -- ============================================================================
--- These tests simulate sophisticated attack patterns that require:
--- ✅ Behavioral baseline analysis (ML-based)
--- ✅ Cross-signal correlation (user + time + query type)
--- ✅ Historical pattern comparison (impossible for rule-based SIEM)
+-- Estos tests simulan patrones de ataque sofisticados que requieren:
+-- ✅ Análisis de baseline comportamental (ML)
+-- ✅ Correlación cross-signal (usuario + tiempo + tipo de query)
+-- ✅ Comparación con patrones históricos (imposible para SIEM basado en reglas)
 --
--- Defender/SIEM would see these as "normal" individual events because:
--- ❌ They don't know your business hours
--- ❌ They can't establish per-user baselines
--- ❌ They lack context about normal privilege patterns
--- ❌ They process events in isolation, not as behavioral sequences
+-- Defender/SIEM vería estos como eventos "normales" individuales porque:
+-- ❌ No conocen tus horarios de trabajo
+-- ❌ No pueden establecer baselines por usuario
+-- ❌ No tienen contexto sobre patrones normales de privilegios
+-- ❌ Procesan eventos de forma aislada, no como secuencias de comportamiento
 -- ============================================================================
 
 
 -- ============================================================================
--- TEST 5: ANOMALÍA AVANZADA - Acceso Fuera de Horario (Off-Hours Access)
--- ============================================================================
--- 📊 Requisito: Detectar acceso a horas inusuales para el usuario
---             (Query: series_decompose_anomalies en métricas por hora)
--- 🎯 Estrategia: Simular actividad en horario atípico
--- 
--- ⚠️ POR QUÉ DEFENDER NO LO DETECTA:
---    - Defender ve "usuario X ejecutó SELECT" = evento normal ✅
---    - NO sabe que este usuario NUNCA trabaja a las 3 AM
---    - NO tiene baseline del patrón horario de cada usuario
---    - Solo Fabric ML con series_decompose_anomalies puede detectarlo
---
--- 📈 Resultado esperado en dashboard (con ML configurado):
---    - AnomalyType: Off-Hours Access
---    - HourOfDay: Hora actual
---    - User: Tu usuario
---    - DeviationScore: >1.5 (si es hora anormal para tu patrón)
--- ============================================================================
-
--- 🕐 FASE 1: Ejecutar queries que serán analizadas por patrones horarios
-SELECT current_timestamp as access_time, 'OFF-HOURS TEST' as test_type;
-
--- Accesos a datos sensibles (sospechoso si es off-hours)
-SELECT * FROM person.person WHERE businessentityid < 10;
-SELECT * FROM sales.customer WHERE customerid < 20;
-SELECT * FROM humanresources.employee LIMIT 5;
-SELECT * FROM sales.salesorderheader WHERE totaldue > 10000 LIMIT 10;
-
--- Queries de reconocimiento en off-hours (más sospechoso)
-SELECT tablename, schemaname FROM pg_catalog.pg_tables 
-    WHERE schemaname NOT IN ('pg_catalog', 'information_schema');
-SELECT column_name, data_type FROM information_schema.columns 
-    WHERE table_schema = 'sales' LIMIT 10;
-
--- ✅ TOTAL: 7 queries para análisis de patrón horario
--- 🎬 DEMO TIP: Ejecutar a diferentes horas y mostrar cómo ML detecta desviación
--- ============================================================================
-
-
--- ============================================================================
--- TEST 6: ANOMALÍA AVANZADA - Escalada de Privilegios (Privilege Escalation)
+-- TEST 4: ANOMALÍA 4 - Escalada de Privilegios (Privilege Escalation)
 -- ============================================================================
 -- 📊 Requisito: Detectar >3 operaciones de privilegios en 5 minutos
---             (GRANT, REVOKE, ALTER ROLE, CREATE ROLE)
+--             (Query: kql-queries-PRODUCTION.kql líneas 252-314)
 -- 🎯 Estrategia: Ejecutar secuencia de GRANTs sospechosa
+-- ⏱️ Tiempo de ejecución: ~30 segundos
 -- 
 -- ⚠️ POR QUÉ DEFENDER NO LO DETECTA:
 --    - Defender ve "GRANT SELECT TO user" = operación de admin normal ✅
@@ -525,11 +509,12 @@ SELECT column_name, data_type FROM information_schema.columns
 --    - NO detecta el PATRÓN (mismo usuario otorgando permisos a sí mismo)
 --    - NO correlaciona con el rol del usuario (¿es realmente admin?)
 --
--- 📈 Resultado esperado en dashboard:
+-- 📈 Resultado esperado en dashboard (1-2 min después):
 --    - AnomalyType: Privilege Escalation
---    - PrivilegeOpsCount: 5+
+--    - Severity: MEDIUM/HIGH
+--    - PrivilegeOpsCount: 6+
 --    - Operations: GRANT, REVOKE, CREATE ROLE
---    - TargetRoles: Lista de roles afectados
+--    - User: Tu usuario
 -- ============================================================================
 
 -- 🏗️ PREPARACIÓN: Crear roles temporales para pruebas
@@ -556,15 +541,15 @@ REVOKE ALL ON SCHEMA public FROM test_analyst_v3;  -- Revocación sospechosa
 DROP ROLE IF EXISTS test_analyst_v3;
 DROP ROLE IF EXISTS test_developer_v3;
 DROP ROLE IF EXISTS test_admin_v3;
--- ============================================================================
 
 
 -- ============================================================================
--- TEST 7: ANOMALÍA AVANZADA - Reconocimiento Cross-Database
+-- TEST 5: ANOMALÍA 5 - Reconocimiento Cross-Schema (Lateral Movement)
 -- ============================================================================
--- 📊 Requisito: Detectar mismo usuario accediendo >3 schemas en 10 minutos
---             (Patrón de movimiento lateral)
+-- 📊 Requisito: Detectar mismo usuario accediendo >4 schemas en 10 minutos
+--             (Query: kql-queries-PRODUCTION.kql líneas 316-374)
 -- 🎯 Estrategia: Ejecutar queries que acceden a múltiples schemas
+-- ⏱️ Tiempo de ejecución: ~30 segundos
 -- 
 -- ⚠️ POR QUÉ DEFENDER NO LO DETECTA:
 --    - Defender ve "SELECT from sales.X" = query normal ✅
@@ -572,11 +557,12 @@ DROP ROLE IF EXISTS test_admin_v3;
 --    - NO tiene contexto de que este usuario normalmente usa 1 schema
 --    - Movimiento lateral es invisible sin análisis cross-schema
 --
--- 📈 Resultado esperado en dashboard:
---    - AnomalyType: Cross-Database Reconnaissance
+-- 📈 Resultado esperado en dashboard (1-2 min después):
+--    - AnomalyType: Cross-Schema Reconnaissance
+--    - Severity: MEDIUM/HIGH
 --    - SchemasAccessed: 5+
---    - TimeWindow: <10 minutos
---    - AccessPattern: Lateral Movement Indicator
+--    - SchemaList: sales, production, person, humanresources, purchasing
+--    - User: Tu usuario
 -- ============================================================================
 
 -- 🔍 Queries que acceden a múltiples schemas en ráfaga
@@ -602,11 +588,12 @@ GROUP BY table_schema;
 
 
 -- ============================================================================
--- TEST 8: ANOMALÍA AVANZADA - Enumeración Profunda de Schema
+-- TEST 6: ANOMALÍA 6 - Enumeración Profunda de Schema (Deep Scan)
 -- ============================================================================
 -- 📊 Requisito: Detectar >10 queries a tablas de sistema en 5 minutos
---             (pg_catalog, information_schema, pg_proc, pg_type)
+--             (Query: kql-queries-PRODUCTION.kql líneas 377-455)
 -- 🎯 Estrategia: Ejecutar reconocimiento exhaustivo del schema
+-- ⏱️ Tiempo de ejecución: ~30 segundos
 -- 
 -- ⚠️ POR QUÉ DEFENDER NO LO DETECTA:
 --    - Defender ve "SELECT from pg_tables" = query de metadata ✅
@@ -614,11 +601,13 @@ GROUP BY table_schema;
 --    - NO detecta la SECUENCIA (pg_tables → pg_columns → pg_proc)
 --    - Este patrón es preparación para SQL injection o exfiltración
 --
--- 📈 Resultado esperado en dashboard:
+-- 📈 Resultado esperado en dashboard (1-2 min después):
 --    - AnomalyType: Deep Schema Enumeration
+--    - Severity: MEDIUM/HIGH/CRITICAL
 --    - SystemTableQueries: 15+
---    - TablesScanned: pg_tables, pg_columns, pg_proc, pg_type...
---    - RiskLevel: HIGH (precursor de ataque)
+--    - TablesScanned: pg_tables, pg_class, pg_attribute, pg_proc...
+--    - RiskLevel: 🔴 HIGH - Multi-table scan
+--    - User: Tu usuario
 -- ============================================================================
 
 -- 🔍 FASE 1: Mapeo de estructura de tablas
@@ -655,6 +644,127 @@ SELECT grantee, privilege_type, table_name FROM information_schema.table_privile
 --    - "Cada query parece inocente"
 --    - "La SECUENCIA revela intención: mapear toda la BD"
 --    - "Defender ve 15 queries normales, Fabric ve 1 ataque coordinado"
+-- ============================================================================
+
+
+-- ============================================================================
+-- TEST 7: ANOMALÍA 7 - Desviación de Baseline ML (ML Baseline Deviation)
+-- ============================================================================
+-- 📊 Requisito: Generar actividad que desvíe del baseline ML
+--             (Query: series_decompose_anomalies en postgres_activity_metrics)
+-- 🎯 Estrategia: Ejecutar MUCHAS queries para crear spike de actividad
+-- 
+-- ⚠️ IMPORTANTE: Este test requiere:
+--    1. Tabla postgres_activity_metrics creada (ANOMALY-DETECTION-SETUP.kql)
+--    2. Al menos 7 días de datos históricos para baseline
+--    3. Ejecutar en horario INUSUAL para tu patrón (ej: 3 AM)
+--
+-- ⚠️ POR QUÉ DEFENDER NO LO DETECTA:
+--    - Defender ve "usuario X ejecutó SELECT" = evento normal ✅
+--    - NO sabe que este usuario NUNCA trabaja a las 3 AM
+--    - NO tiene baseline del patrón horario de cada usuario
+--    - Solo Fabric ML con series_decompose_anomalies puede detectarlo
+--
+-- 📈 Resultado esperado en dashboard (5-10 min después):
+--    - AnomalyType: ML Baseline Deviation
+--    - AnomalyDirection: 📈 Above Normal
+--    - DeviationScore: >1.5 (debe ser >2.0 para HIGH, >3.0 para CRITICAL)
+--    - ServerName: Tu servidor
+-- ============================================================================
+
+-- 🕐 FASE 1: Generar SPIKE de actividad (50+ queries en 5 minutos)
+-- El objetivo es generar actividad MUY POR ENCIMA del baseline normal
+
+SELECT current_timestamp as access_time, 'ML SPIKE TEST - START' as test_type;
+
+-- 🔥 RÁFAGA 1: Accesos masivos a tablas de negocio (20 queries)
+SELECT * FROM sales.customer LIMIT 1;
+SELECT * FROM sales.salesorderheader LIMIT 1;
+SELECT * FROM sales.salesorderdetail LIMIT 1;
+SELECT * FROM sales.store LIMIT 1;
+SELECT * FROM sales.salesperson LIMIT 1;
+SELECT * FROM person.person LIMIT 1;
+SELECT * FROM person.address LIMIT 1;
+SELECT * FROM person.emailaddress LIMIT 1;
+SELECT * FROM person.phonenumbertype LIMIT 1;
+SELECT * FROM person.businessentity LIMIT 1;
+SELECT * FROM production.product LIMIT 1;
+SELECT * FROM production.productcategory LIMIT 1;
+SELECT * FROM production.productsubcategory LIMIT 1;
+SELECT * FROM production.productmodel LIMIT 1;
+SELECT * FROM production.productinventory LIMIT 1;
+SELECT * FROM humanresources.employee LIMIT 1;
+SELECT * FROM humanresources.department LIMIT 1;
+SELECT * FROM humanresources.shift LIMIT 1;
+SELECT * FROM purchasing.vendor LIMIT 1;
+SELECT * FROM purchasing.purchaseorderheader LIMIT 1;
+
+-- 🔥 RÁFAGA 2: Queries de conteo (10 queries más)
+SELECT COUNT(*) FROM sales.customer;
+SELECT COUNT(*) FROM sales.salesorderheader;
+SELECT COUNT(*) FROM person.person;
+SELECT COUNT(*) FROM production.product;
+SELECT COUNT(*) FROM humanresources.employee;
+SELECT COUNT(*) FROM purchasing.vendor;
+SELECT COUNT(*) FROM sales.salesorderdetail;
+SELECT COUNT(*) FROM person.address;
+SELECT COUNT(*) FROM production.productinventory;
+SELECT COUNT(*) FROM humanresources.department;
+
+-- 🔥 RÁFAGA 3: Queries con agregaciones (10 queries más)
+SELECT MAX(totaldue) FROM sales.salesorderheader;
+SELECT MIN(totaldue) FROM sales.salesorderheader;
+SELECT AVG(listprice) FROM production.product;
+SELECT SUM(orderqty) FROM sales.salesorderdetail;
+SELECT COUNT(DISTINCT customerid) FROM sales.customer;
+SELECT MAX(modifieddate) FROM person.person;
+SELECT MIN(hiredate) FROM humanresources.employee;
+SELECT AVG(standardcost) FROM production.product;
+SELECT SUM(quantity) FROM production.productinventory;
+SELECT COUNT(DISTINCT departmentid) FROM humanresources.department;
+
+-- 🔥 RÁFAGA 4: Queries con JOINs (10 queries más - más carga)
+SELECT c.customerid, p.firstname FROM sales.customer c 
+    JOIN person.person p ON c.personid = p.businessentityid LIMIT 5;
+SELECT o.salesorderid, c.customerid FROM sales.salesorderheader o 
+    JOIN sales.customer c ON o.customerid = c.customerid LIMIT 5;
+SELECT e.businessentityid, d.name FROM humanresources.employee e 
+    JOIN humanresources.employeedepartmenthistory edh ON e.businessentityid = edh.businessentityid
+    JOIN humanresources.department d ON edh.departmentid = d.departmentid LIMIT 5;
+SELECT p.productid, pc.name FROM production.product p 
+    JOIN production.productsubcategory ps ON p.productsubcategoryid = ps.productsubcategoryid
+    JOIN production.productcategory pc ON ps.productcategoryid = pc.productcategoryid LIMIT 5;
+SELECT v.businessentityid, pod.productid FROM purchasing.vendor v 
+    JOIN purchasing.purchaseorderheader poh ON v.businessentityid = poh.vendorid
+    JOIN purchasing.purchaseorderdetail pod ON poh.purchaseorderid = pod.purchaseorderid LIMIT 5;
+SELECT a.addressid, sp.name FROM person.address a 
+    JOIN person.stateprovince sp ON a.stateprovinceid = sp.stateprovinceid LIMIT 5;
+SELECT p.businessentityid, e.emailaddressid FROM person.person p 
+    JOIN person.emailaddress e ON p.businessentityid = e.businessentityid LIMIT 5;
+SELECT soh.salesorderid, sod.productid, p.name FROM sales.salesorderheader soh
+    JOIN sales.salesorderdetail sod ON soh.salesorderid = sod.salesorderid
+    JOIN production.product p ON sod.productid = p.productid LIMIT 5;
+SELECT c.customerid, a.city FROM sales.customer c 
+    JOIN person.businessentityaddress bea ON c.personid = bea.businessentityid
+    JOIN person.address a ON bea.addressid = a.addressid LIMIT 5;
+SELECT e.businessentityid, p.firstname, p.lastname FROM humanresources.employee e
+    JOIN person.person p ON e.businessentityid = p.businessentityid LIMIT 5;
+
+SELECT current_timestamp as access_time, 'ML SPIKE TEST - END' as test_type;
+
+-- ✅ TOTAL: 52 queries ejecutadas en ráfaga (~1-2 minutos)
+-- 🎬 DEMO TIP: 
+--    - "Ejecutamos 52 queries en 2 minutos"
+--    - "El baseline normal es ~5-10 queries por ventana de 5 minutos"
+--    - "ML detecta que esto es 5-10x el baseline = ANOMALÍA"
+--    - "DeviationScore > 2.0 = HIGH, > 3.0 = CRITICAL"
+--
+-- ⏸️ PAUSA PARA LA DEMO (5-10 minutos):
+-- El ML necesita más tiempo para procesar y comparar con el baseline.
+-- Mientras esperas, ejecuta los otros tests o explica:
+-- - "series_decompose_anomalies() compara con los últimos 7 días"
+-- - "Detecta seasonality (patrones horarios/diarios) automáticamente"
+-- - "Si la actividad actual está 1.5σ por encima del baseline = anomalía"
 -- ============================================================================
 
 
@@ -709,6 +819,29 @@ SELECT
 -- │    - ErrorCodes: 42P01 (undefined_table), 42703 (undefined_column)      │
 -- │    - SampleErrors: Mensajes de queries fallidas                         │
 -- │    - User/Database/SourceHost: TU información                           │
+-- │                                                                         │
+-- │ ✅ TEST 4 - Anomalía "Privilege Escalation" 🔴 AVANZADA                │
+-- │    - AnomalyType: Privilege Escalation                                  │
+-- │    - PrivilegeOpsCount: 6+                                              │
+-- │    - Operations: CREATE ROLE, GRANT, REVOKE                             │
+-- │    - User/Database/SourceHost: TU información                           │
+-- │                                                                         │
+-- │ ✅ TEST 5 - Anomalía "Cross-Schema Reconnaissance" 🔴 AVANZADA         │
+-- │    - AnomalyType: Cross-Schema Reconnaissance                           │
+-- │    - SchemasAccessed: 5+ (sales, production, person, hr, purchasing)    │
+-- │    - User/Database/SourceHost: TU información                           │
+-- │                                                                         │
+-- │ ✅ TEST 6 - Anomalía "Deep Schema Enumeration" 🔴 AVANZADA             │
+-- │    - AnomalyType: Deep Schema Enumeration                               │
+-- │    - SystemTableQueries: 15+                                            │
+-- │    - TablesScanned: pg_tables, pg_class, pg_attribute, pg_proc...       │
+-- │    - User/Database/SourceHost: TU información                           │
+-- │                                                                         │
+-- │ ✅ TEST 7 - Anomalía "ML Baseline Deviation" 🔴 AVANZADA               │
+-- │    - AnomalyType: ML Baseline Deviation                                 │
+-- │    - DeviationScore: >1.5 (>2.0 = HIGH, >3.0 = CRITICAL)               │
+-- │    - AnomalyDirection: 📈 Above Normal                                  │
+-- │    - ⚠️ Requiere: 7 días de datos históricos + ejecutar a hora inusual │
 -- └────────────────────────────────────────────────────────────────────────┘
 
 -- 📊 OTROS TILES DEL DASHBOARD (Verificación Adicional):
@@ -724,7 +857,7 @@ SELECT
 -- │    - Errors: ~20 (si ejecutaste TEST 3)                                 │
 -- │    - ErrorRate: calculado (Errors / TotalConnections)                   │
 -- │                                                                         │
--- │ ✅ TILE "Fallos de Autenticación" (Solo si ejecutaste TEST 4)          │
+-- │ ✅ TILE "Fallos de Autenticación" (Solo si ejecutaste TEST AUTH)       │
 -- │    - User: testuser (o el usuario que usaste)                           │
 -- │    - ClientHost: tu_ip_publica                                          │
 -- │    - FailedAttempts: ~20                                                │
@@ -892,9 +1025,13 @@ sessionInfo
 -- ☐ 7. Ejecutar TEST 1 y verificar que aparece en dashboard (~2 min)
 -- ☐ 8. Ejecutar TEST 2 y verificar que aparece en dashboard (~2 min)
 -- ☐ 9. Ejecutar TEST 3 y verificar que aparece en dashboard (~2 min)
--- ☐ 10. (Opcional) Ejecutar TEST 4 con script bash/powershell/python
--- ☐ 11. Verificar que User/Database/Host NO son "UNKNOWN" (correlación OK)
--- ☐ 12. Limpiar tabla temp_test_anomaly al final de la demo
+-- ☐ 10. Ejecutar TEST 4 (Privilege Escalation) y verificar (~2 min)
+-- ☐ 11. Ejecutar TEST 5 (Cross-Schema Recon) y verificar (~2 min)
+-- ☐ 12. Ejecutar TEST 6 (Deep Schema Enum) y verificar (~2 min)
+-- ☐ 13. Ejecutar TEST 7 (ML Baseline) y verificar (~5-10 min)
+-- ☐ 14. (Opcional) Ejecutar TEST AUTH con script bash/powershell/python
+-- ☐ 15. Verificar que User/Database/Host NO son "UNKNOWN" (correlación OK)
+-- ☐ 16. Limpiar tabla temp_test_anomaly al final de la demo
 
 -- ✅ SI TODOS LOS CHECKS PASAN, ESTÁS LISTO PARA LA DEMO!
 -- ============================================================================
