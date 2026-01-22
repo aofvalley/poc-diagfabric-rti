@@ -1,9 +1,17 @@
-# 📊 Data Source Instructions - bronze_pssql_alllogs_nometrics
+# 📊 Data Source Instructions - PostgreSQL Monitoring (v3 Enhanced)
 
-**Table Name**: `bronze_pssql_alllogs_nometrics`  
-**Database**: [Your KQL Database Name]  
+## Primary Table: `bronze_pssql_alllogs_nometrics`
+
 **Type**: PostgreSQL Diagnostic Logs (Real-time stream via Azure Event Hub)  
 **Retention**: [Your retention period - e.g., 90 days]
+
+## 🆕 ML Metrics Tables (v3 Anomaly Detection)
+
+| Table | Granularity | Purpose |
+|---|---|---|
+| `postgres_activity_metrics` | 5 min | Primary ML anomaly detection |
+| `postgres_error_metrics` | 1 min | Error rate trends |
+| `postgres_user_metrics` | 1 hour | Per-user behavior analysis |
 
 ---
 
@@ -19,7 +27,8 @@ This table contains **all diagnostic logs** from Azure Database for PostgreSQL F
 - Security monitoring (brute force, SQL injection, data exfiltration)
 - Performance troubleshooting (slow queries, connection issues)
 - Compliance auditing (who accessed what data, when)
-- Anomaly detection (ML-based pattern recognition)
+- **ML Anomaly detection** (temporal patterns, behavioral baselines, `series_decompose_anomalies()`)
+- **Privilege escalation tracking** (GRANT/REVOKE/ALTER ROLE operations)
 
 ---
 
@@ -40,6 +49,61 @@ This table contains **all diagnostic logs** from Azure Database for PostgreSQL F
 | `SourceSystem` | string | Source system | `Azure` |
 | `TenantId` | string | Azure tenant ID | `<guid>` |
 | `Type` | string | Table type | `AzureDiagnostics` |
+
+---
+
+## 🤖 ML Metrics Tables Schema (v3)
+
+### `postgres_activity_metrics` (Primary ML Table)
+
+**Update Policy**: Auto-aggregated every 5 minutes from `bronze_pssql_alllogs_nometrics`
+
+| **Column** | **Type** | **Description** | **Use Case** |
+|---|---|---|---|
+| `Timestamp` | datetime | 5-minute bucket timestamp | Time series analysis |
+| `ServerName` | string | PostgreSQL server name | Filter by server |
+| `HourOfDay` | int | Hour (0-23) | Detect off-hours activity |
+| `DayOfWeek` | int | Day (0=Sun, 6=Sat) | Weekend/weekday patterns |
+| `ActivityCount` | long | Total log events | Overall activity baseline |
+| `AuditLogs` | long | AUDIT log count | Query activity tracking |
+| `Errors` | long | ERROR/FATAL/PANIC count | Error rate monitoring |
+| `Connections` | long | New connection count | Connection pattern analysis |
+| `UniqueUsers` | long | Distinct users | User cardinality anomalies |
+| `SelectOps` | long | SELECT/COPY/READ | Read operation volume |
+| `WriteOps` | long | INSERT/UPDATE/DELETE | Write operation volume |
+| `DDLOps` | long | CREATE/DROP/ALTER | Schema change tracking |
+| `PrivilegeOps` | long | GRANT/REVOKE/ALTER ROLE | 🔴 Security-critical alerts |
+
+**Key Detection Patterns**:
+- `PrivilegeOps > 0` → Immediate security review (privilege escalation)
+- `DDLOps` during `HourOfDay NOT IN (9..17)` → Off-hours schema changes
+- `UniqueUsers` spike > 2x baseline → Possible credential compromise
+
+### `postgres_error_metrics`
+
+**Update Policy**: Auto-aggregated every 1 minute
+
+| **Column** | **Type** | **Description** |
+|---|---|---|
+| `Timestamp` | datetime | 1-minute bucket |
+| `ServerName` | string | PostgreSQL server |
+| `ErrorRate` | long | Errors per minute |
+| `ErrorTypes` | string | Comma-separated categories |
+
+**ErrorTypes Values**: `Authentication`, `Permission`, `Connection`, `Other`
+
+### `postgres_user_metrics`
+
+**Update Policy**: Auto-aggregated every 1 hour
+
+| **Column** | **Type** | **Description** |
+|---|---|---|
+| `Timestamp` | datetime | 1-hour bucket |
+| `UserName` | string | Database user |
+| `ServerName` | string | PostgreSQL server |
+| `QueryCount` | long | Total queries |
+| `SelectQueries` | long | SELECT/COPY count |
+| `DestructiveOps` | long | DELETE/UPDATE/TRUNCATE/DROP |
 
 ---
 
@@ -178,9 +242,9 @@ bronze_pssql_alllogs_nometrics
     ClientHost = extract(@"host=([^\s]+)", 1, message)
 | where isnotempty(UserName)
 | summarize 
-    User = any(UserName), 
-    Database = any(DatabaseName), 
-    SourceHost = any(ClientHost)
+    User = take_any(UserName), 
+    Database = take_any(DatabaseName), 
+    SourceHost = take_any(ClientHost)
     by processId, LogicalServerName;
 
 // STEP 2: Join AUDIT logs with sessionInfo
@@ -344,6 +408,113 @@ bronze_pssql_alllogs_nometrics
 
 ---
 
+## 🤖 ML Anomaly Detection Query Patterns (v3)
+
+### **Pattern 5: Time Series Anomaly Detection (Activity)**
+
+```kql
+postgres_activity_metrics
+| where Timestamp >= ago(7d)
+| make-series ActivitySeries = avg(ActivityCount) default=0 on Timestamp step 5m by ServerName
+| extend (anomalies, score, baseline) = series_decompose_anomalies(ActivitySeries, 1.5, -1, 'linefit')
+| mv-expand Timestamp to typeof(datetime), ActivitySeries to typeof(double), anomalies to typeof(int), score to typeof(double), baseline to typeof(double)
+| where anomalies != 0
+| project Timestamp, ServerName, Activity = ActivitySeries, Baseline = baseline, AnomalyScore = score, Direction = iff(anomalies == 1, "🔴 Spike", "🔵 Drop")
+| order by Timestamp desc
+```
+
+**Understanding the Output**:
+- `anomalies = 1`: Unexpected spike above baseline
+- `anomalies = -1`: Unexpected drop below baseline
+- `score`: Deviation magnitude (higher = more anomalous)
+- `baseline`: Expected value based on learned pattern
+
+---
+
+### **Pattern 6: Privilege Escalation Alerts**
+
+```kql
+postgres_activity_metrics
+| where Timestamp >= ago(24h)
+| where PrivilegeOps > 0
+| project Timestamp, ServerName, HourOfDay, DayOfWeek, PrivilegeOps, DDLOps
+| extend 
+    TimeRisk = iff(HourOfDay < 9 or HourOfDay > 17, "🔴 Off-Hours", "🟡 Business Hours"),
+    WeekendRisk = iff(DayOfWeek in (0, 6), "🔴 Weekend", "✅ Weekday")
+| order by Timestamp desc
+```
+
+**Alert Logic**: Any `PrivilegeOps > 0` requires immediate review, especially if `TimeRisk = Off-Hours`.
+
+---
+
+### **Pattern 7: User Behavioral Baseline Comparison**
+
+```kql
+postgres_user_metrics
+| where Timestamp >= ago(7d)
+| summarize 
+    AvgDailyQueries = avg(QueryCount),
+    AvgDestructiveOps = avg(DestructiveOps),
+    MaxDestructiveOps = max(DestructiveOps),
+    TotalDays = dcount(bin(Timestamp, 1d))
+    by UserName, ServerName
+| extend 
+    DestructiveRatio = round(AvgDestructiveOps * 100.0 / AvgDailyQueries, 2),
+    RiskLevel = case(
+        MaxDestructiveOps > 50, "🔴 High Risk",
+        DestructiveRatio > 20, "🟠 Medium Risk",
+        "✅ Normal"
+    )
+| order by MaxDestructiveOps desc
+```
+
+---
+
+### **Pattern 8: Temporal Heatmap (Activity by Hour/Day)**
+
+```kql
+postgres_activity_metrics
+| where Timestamp >= ago(7d)
+| summarize 
+    AvgActivity = avg(ActivityCount),
+    AvgErrors = avg(Errors),
+    AvgPrivOps = avg(PrivilegeOps)
+    by HourOfDay, DayOfWeek
+| extend 
+    DayName = case(
+        DayOfWeek == 0, "Sun",
+        DayOfWeek == 1, "Mon",
+        DayOfWeek == 2, "Tue",
+        DayOfWeek == 3, "Wed",
+        DayOfWeek == 4, "Thu",
+        DayOfWeek == 5, "Fri",
+        "Sat"
+    )
+| project DayName, DayOfWeek, HourOfDay, AvgActivity, AvgErrors, AvgPrivOps
+| order by DayOfWeek asc, HourOfDay asc
+```
+
+**Use Case**: Identify normal activity patterns vs suspicious off-hours behavior.
+
+---
+
+### **Pattern 9: Error Rate Trend with Anomalies**
+
+```kql
+postgres_error_metrics
+| where Timestamp >= ago(24h)
+| make-series ErrorSeries = sum(ErrorRate) default=0 on Timestamp step 1m by ServerName
+| extend (anomalies, score, baseline) = series_decompose_anomalies(ErrorSeries, 1.5)
+| mv-expand Timestamp to typeof(datetime), ErrorSeries to typeof(long), anomalies to typeof(int), score to typeof(double)
+| where anomalies != 0
+| project Timestamp, ServerName, Errors = ErrorSeries, AnomalyScore = score, Type = iff(anomalies == 1, "🔴 Spike", "🔵 Drop")
+| order by abs(score) desc
+| take 50
+```
+
+---
+
 ## 🔒 Security & Compliance
 
 ### **Data Sensitivity**
@@ -399,18 +570,33 @@ bronze_pssql_alllogs_nometrics
 
 ## 📈 Data Freshness
 
+### Raw Logs (`bronze_pssql_alllogs_nometrics`)
 - **Latency**: Logs appear 1-5 seconds after PostgreSQL generates them
 - **Update Frequency**: Continuous stream (real-time)
 - **Backfill**: Historical data available from [start date]
 - **Gaps**: Check Azure Event Hub metrics if gaps detected
 
+### ML Metrics Tables (v3)
+- **`postgres_activity_metrics`**: Updated every 5 minutes via Update Policy
+- **`postgres_error_metrics`**: Updated every 1 minute via Update Policy
+- **`postgres_user_metrics`**: Updated every 1 hour via Update Policy
+- **Initial Training**: Requires 7-30 days of historical data for ML baseline
+
 **Verify Data Freshness**:
 ```kql
+// Raw logs freshness
 bronze_pssql_alllogs_nometrics
 | summarize LatestLog = max(EventProcessedUtcTime)
 | extend 
     Lag = now() - LatestLog,
     Status = iff(Lag > 5m, "🔴 Delayed", "✅ Real-time")
+
+// ML metrics freshness
+postgres_activity_metrics
+| summarize LatestMetric = max(Timestamp)
+| extend 
+    Lag = now() - LatestMetric,
+    Status = iff(Lag > 10m, "🔴 Delayed", "✅ Normal")
 ```
 
 ---
@@ -447,6 +633,47 @@ bronze_pssql_alllogs_nometrics
 | where sqlerrcode != "00000" and sqlerrcode != ""
 | summarize Count = count() by sqlerrcode, errorLevel
 | order by Count desc
+```
+
+### **ML Metrics Tables Validation (v3)**
+
+```kql
+// 5. Verify postgres_activity_metrics is populating
+postgres_activity_metrics
+| order by Timestamp desc
+| take 20
+
+// 6. Check for PrivilegeOps (security-critical)
+postgres_activity_metrics
+| where Timestamp >= ago(7d)
+| where PrivilegeOps > 0
+| project Timestamp, ServerName, PrivilegeOps, DDLOps
+| order by Timestamp desc
+
+// 7. Verify temporal columns are correct
+postgres_activity_metrics
+| where Timestamp >= ago(24h)
+| summarize Count = count() by HourOfDay
+| order by HourOfDay asc
+
+// 8. Test ML anomaly detection works
+postgres_activity_metrics
+| where Timestamp >= ago(7d)
+| make-series ActivitySeries = avg(ActivityCount) on Timestamp step 5m by ServerName
+| extend (anomalies, score, baseline) = series_decompose_anomalies(ActivitySeries)
+| take 1
+
+// 9. Verify postgres_error_metrics
+postgres_error_metrics
+| where Timestamp >= ago(24h)
+| summarize TotalErrors = sum(ErrorRate) by ServerName
+
+// 10. Verify postgres_user_metrics
+postgres_user_metrics
+| where Timestamp >= ago(7d)
+| summarize TotalQueries = sum(QueryCount), TotalDestructive = sum(DestructiveOps) by UserName
+| order by TotalQueries desc
+| take 10
 ```
 
 ---
@@ -509,6 +736,45 @@ bronze_pssql_alllogs_nometrics
 2. Reduce sessionInfo window: Use smallest time range that works
 3. Use materialized views (Update Policy) for common queries
 4. Consider data retention policy (purge old logs)
+
+---
+
+### **Issue: ML Metrics tables not updating**
+
+**Diagnosis**:
+```kql
+// Check Update Policy status
+.show table postgres_activity_metrics policy update
+
+// Check for ingestion failures
+.show ingestion failures
+| where Table == "postgres_activity_metrics"
+| order by FailedOn desc
+| take 20
+```
+
+**Solution**:
+1. Verify Update Policy is enabled: `IsEnabled: true`
+2. Check source table has data: `bronze_pssql_alllogs_nometrics | take 10`
+3. Force refresh: `.refresh table postgres_activity_metrics`
+4. Check for schema mismatches in transform function
+
+---
+
+### **Issue: No anomalies detected (ML not working)**
+
+**Diagnosis**:
+```kql
+// Check data volume (need 7+ days for ML)
+postgres_activity_metrics
+| summarize MinTime = min(Timestamp), MaxTime = max(Timestamp), Records = count()
+```
+
+**Solution**:
+1. Ensure at least 7 days of historical data exists
+2. Adjust sensitivity: Change threshold from 1.5 to 1.0 for more sensitive detection
+3. Check data variance: ML needs variation to detect anomalies
+4. Use `| take 100` to verify make-series returns data
 
 ---
 
