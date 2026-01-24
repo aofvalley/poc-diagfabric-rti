@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""
+PostgreSQL Anomaly Testing Orchestrator
+========================================
+Ejecuta automáticamente tests de anomalías contra PostgreSQL Flexible Servers
+para demostración de detección con Microsoft Fabric.
+
+Autor: Alfonso D.
+Fecha: 2026-01-24
+"""
+
+import os
+import sys
+import time
+import glob
+from datetime import datetime
+from typing import List, Tuple, Optional
+import psycopg2
+from psycopg2 import OperationalError, ProgrammingError
+from colorama import Fore, Style, init
+
+# Inicializar colorama para Windows compatibility
+init(autoreset=True)
+
+# ============================================================================
+# Configuración
+# ============================================================================
+
+class Config:
+    """Configuración del orquestador de tests"""
+    
+    def __init__(self):
+        self.servers = os.getenv('POSTGRES_SERVERS', '').split(',')
+        self.servers = [s.strip() for s in self.servers if s.strip()]
+        self.user = os.getenv('POSTGRES_USER', '')
+        self.password = os.getenv('POSTGRES_PASSWORD', '')
+        self.database = os.getenv('POSTGRES_DATABASE', 'adventureworks')
+        self.port = int(os.getenv('POSTGRES_PORT', '5432'))
+        self.delay_between_tests = int(os.getenv('DELAY_BETWEEN_TESTS', '120'))
+        self.enable_brute_force = os.getenv('ENABLE_BRUTE_FORCE', 'false').lower() == 'true'
+        self.brute_force_attempts = int(os.getenv('BRUTE_FORCE_ATTEMPTS', '20'))
+        self.sql_tests_dir = os.path.join(os.path.dirname(__file__), 'sql_tests')
+        
+    def validate(self) -> Tuple[bool, str]:
+        """Valida la configuración"""
+        if not self.servers:
+            return False, "❌ No se especificaron servidores PostgreSQL (POSTGRES_SERVERS)"
+        if not self.user:
+            return False, "❌ No se especificó usuario (POSTGRES_USER)"
+        if not self.password:
+            return False, "❌ No se especificó contraseña (POSTGRES_PASSWORD)"
+        if not os.path.exists(self.sql_tests_dir):
+            return False, f"❌ No se encontró directorio de tests: {self.sql_tests_dir}"
+        return True, "✅ Configuración válida"
+
+
+# ============================================================================
+# Funciones de Ejecución
+# ============================================================================
+
+def print_banner():
+    """Imprime banner de inicio"""
+    print(f"\n{Fore.CYAN}{'='*80}")
+    print(f"{Fore.CYAN}  PostgreSQL Anomaly Testing Orchestrator")
+    print(f"{Fore.CYAN}  Para demos de Microsoft Fabric - Detección de Anomalías")
+    print(f"{Fore.CYAN}{'='*80}{Style.RESET_ALL}\n")
+
+
+def print_section(title: str):
+    """Imprime título de sección"""
+    print(f"\n{Fore.YELLOW}{'─'*80}")
+    print(f"{Fore.YELLOW}  {title}")
+    print(f"{Fore.YELLOW}{'─'*80}{Style.RESET_ALL}\n")
+
+
+def get_connection(config: Config, server: str):
+    """Crea una conexión a PostgreSQL"""
+    try:
+        conn = psycopg2.connect(
+            host=server,
+            port=config.port,
+            database=config.database,
+            user=config.user,
+            password=config.password,
+            connect_timeout=10,
+            sslmode='require'
+        )
+        return conn
+    except OperationalError as e:
+        print(f"{Fore.RED}❌ Error de conexión a {server}: {e}{Style.RESET_ALL}")
+        return None
+
+
+def execute_sql_file(conn, sql_file: str, allow_errors: bool = False) -> Tuple[bool, int, int]:
+    """
+    Ejecuta un archivo SQL completo
+    
+    Args:
+        conn: Conexión a PostgreSQL
+        sql_file: Ruta al archivo SQL
+        allow_errors: Si True, no falla al encontrar errores (para TEST 3)
+    
+    Returns:
+        Tuple[success, queries_executed, queries_failed]
+    """
+    with open(sql_file, 'r', encoding='utf-8') as f:
+        sql_content = f.read()
+    
+    # Separar queries por punto y coma
+    # Nota: esto es simplificado, no maneja todos los casos edge (strings con ;, etc.)
+    queries = [q.strip() for q in sql_content.split(';') if q.strip() and not q.strip().startswith('--')]
+    
+    queries_executed = 0
+    queries_failed = 0
+    cursor = conn.cursor()
+    
+    for query in queries:
+        # Ignorar comentarios y líneas vacías
+        if not query or query.startswith('--'):
+            continue
+            
+        try:
+            cursor.execute(query)
+            conn.commit()
+            queries_executed += 1
+        except (ProgrammingError, OperationalError) as e:
+            queries_failed += 1
+            if allow_errors:
+                # TEST 3 espera errores, solo mostramos punto
+                print(f"{Fore.YELLOW}.{Style.RESET_ALL}", end='', flush=True)
+                conn.rollback()
+            else:
+                print(f"{Fore.RED}❌ Error ejecutando query: {e}{Style.RESET_ALL}")
+                conn.rollback()
+                if "does not exist" not in str(e).lower():
+                    # Solo fallamos si no es un error esperado
+                    cursor.close()
+                    return False, queries_executed, queries_failed
+    
+    cursor.close()
+    return True, queries_executed, queries_failed
+
+
+def run_test(config: Config, server: str, test_file: str, test_number: int, test_name: str) -> bool:
+    """Ejecuta un test individual"""
+    print(f"\n{Fore.GREEN}▶ TEST {test_number}: {test_name}{Style.RESET_ALL}")
+    print(f"   Servidor: {Fore.CYAN}{server}{Style.RESET_ALL}")
+    print(f"   Archivo: {Fore.CYAN}{os.path.basename(test_file)}{Style.RESET_ALL}")
+    print(f"   Hora: {Fore.CYAN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
+    
+    conn = get_connection(config, server)
+    if not conn:
+        return False
+    
+    try:
+        # TEST 3 permite errores
+        allow_errors = "error_spike" in test_file
+        
+        success, executed, failed = execute_sql_file(conn, test_file, allow_errors)
+        
+        if allow_errors:
+            print()  # Nueva línea después de los puntos
+        
+        if success or allow_errors:
+            print(f"{Fore.GREEN}   ✅ Test completado{Style.RESET_ALL}")
+            print(f"      Queries ejecutadas: {Fore.CYAN}{executed}{Style.RESET_ALL}")
+            if failed > 0:
+                print(f"      Errores generados: {Fore.YELLOW}{failed}{Style.RESET_ALL} (esperado para TEST 3)")
+        else:
+            print(f"{Fore.RED}   ❌ Test fallido{Style.RESET_ALL}")
+            return False
+            
+    except Exception as e:
+        print(f"{Fore.RED}   ❌ Error inesperado: {e}{Style.RESET_ALL}")
+        return False
+    finally:
+        conn.close()
+    
+    return True
+
+
+def run_brute_force_test(config: Config, server: str):
+    """Ejecuta test de brute force (TEST AUTH)"""
+    print(f"\n{Fore.GREEN}▶ TEST AUTH: Brute Force Attack Simulation{Style.RESET_ALL}")
+    print(f"   Servidor: {Fore.CYAN}{server}{Style.RESET_ALL}")
+    print(f"   Intentos: {Fore.CYAN}{config.brute_force_attempts}{Style.RESET_ALL}")
+    print(f"   Hora: {Fore.CYAN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
+    
+    wrong_password = "INTENTIONALLY_WRONG_PASSWORD_FOR_DEMO_123"
+    failed_attempts = 0
+    
+    for i in range(1, config.brute_force_attempts + 1):
+        print(f"   Intento {i}/{config.brute_force_attempts}...", end=' ', flush=True)
+        
+        try:
+            # Intentar conectar con password incorrecta
+            conn = psycopg2.connect(
+                host=server,
+                port=config.port,
+                database=config.database,
+                user=config.user,
+                password=wrong_password,
+                connect_timeout=5,
+                sslmode='require'
+            )
+            conn.close()
+            print(f"{Fore.YELLOW}⚠️ INESPERADO: Conexión exitosa{Style.RESET_ALL}")
+        except OperationalError as e:
+            if "password authentication failed" in str(e):
+                failed_attempts += 1
+                print(f"{Fore.RED}❌ FAILED{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.YELLOW}⚠️ Error: {e}{Style.RESET_ALL}")
+        
+        # Esperar entre intentos para simular ataque realista
+        if i < config.brute_force_attempts:
+            time.sleep(3)
+    
+    print(f"\n{Fore.GREEN}   ✅ Test completado{Style.RESET_ALL}")
+    print(f"      Fallos de autenticación: {Fore.RED}{failed_attempts}{Style.RESET_ALL}")
+
+
+def run_cleanup(config: Config, server: str):
+    """Ejecuta limpieza post-demo"""
+    print(f"\n{Fore.CYAN}🧹 Ejecutando limpieza post-demo...{Style.RESET_ALL}")
+    
+    cleanup_file = os.path.join(config.sql_tests_dir, 'test_cleanup.sql')
+    if not os.path.exists(cleanup_file):
+        print(f"{Fore.YELLOW}   ⚠️ No se encontró archivo de limpieza{Style.RESET_ALL}")
+        return
+    
+    conn = get_connection(config, server)
+    if not conn:
+        return
+    
+    try:
+        success, executed, failed = execute_sql_file(conn, cleanup_file)
+        if success:
+            print(f"{Fore.GREEN}   ✅ Limpieza completada{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}   ⚠️ Limpieza parcialmente fallida{Style.RESET_ALL}")
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+def main():
+    print_banner()
+    
+    # Cargar y validar configuración
+    config = Config()
+    is_valid, msg = config.validate()
+    
+    if not is_valid:
+        print(f"{Fore.RED}{msg}{Style.RESET_ALL}")
+        print(f"\n{Fore.YELLOW}📝 Variables de entorno requeridas:{Style.RESET_ALL}")
+        print("   - POSTGRES_SERVERS (comma-separated)")
+        print("   - POSTGRES_USER")
+        print("   - POSTGRES_PASSWORD")
+        print("   - POSTGRES_DATABASE (opcional, default: adventureworks)")
+        sys.exit(1)
+    
+    print(f"{Fore.GREEN}{msg}{Style.RESET_ALL}\n")
+    
+    # Mostrar configuración
+    print_section("Configuración")
+    print(f"   Servidores: {Fore.CYAN}{', '.join(config.servers)}{Style.RESET_ALL}")
+    print(f"   Usuario: {Fore.CYAN}{config.user}{Style.RESET_ALL}")
+    print(f"   Base de datos: {Fore.CYAN}{config.database}{Style.RESET_ALL}")
+    print(f"   Delay entre tests: {Fore.CYAN}{config.delay_between_tests}s{Style.RESET_ALL}")
+    print(f"   Brute force: {Fore.CYAN}{'Habilitado' if config.enable_brute_force else 'Deshabilitado'}{Style.RESET_ALL}")
+    
+    # Obtener lista de tests SQL (ordenados)
+    test_files = sorted(glob.glob(os.path.join(config.sql_tests_dir, 'test_[0-9]*.sql')))
+    
+    if not test_files:
+        print(f"\n{Fore.RED}❌ No se encontraron archivos de test en {config.sql_tests_dir}{Style.RESET_ALL}")
+        sys.exit(1)
+    
+    print(f"\n   Tests encontrados: {Fore.CYAN}{len(test_files)}{Style.RESET_ALL}")
+    for test_file in test_files:
+        print(f"      - {os.path.basename(test_file)}")
+    
+    # Nombres descriptivos de los tests
+    test_names = {
+        "test_01": "Data Exfiltration",
+        "test_02": "Mass Destructive Operations",
+        "test_03": "Critical Error Spike",
+        "test_04": "Privilege Escalation",
+        "test_05": "Cross-Schema Reconnaissance",
+        "test_06": "Deep Schema Enumeration",
+        "test_07": "ML Baseline Deviation"
+    }
+    
+    # Ejecutar tests en cada servidor
+    for server in config.servers:
+        print_section(f"Ejecutando tests en servidor: {server}")
+        
+        # Probar conexión inicial
+        conn = get_connection(config, server)
+        if not conn:
+            print(f"{Fore.RED}❌ No se pudo conectar al servidor. Saltando...{Style.RESET_ALL}")
+            continue
+        conn.close()
+        print(f"{Fore.GREEN}✅ Conexión exitosa{Style.RESET_ALL}")
+        
+        # Ejecutar cada test
+        for idx, test_file in enumerate(test_files, 1):
+            # Determinar nombre del test
+            basename = os.path.basename(test_file)
+            test_key = basename.split('_')[0] + '_' + basename.split('_')[1]
+            test_name = test_names.get(test_key, basename)
+            
+            # Ejecutar test
+            success = run_test(config, server, test_file, idx, test_name)
+            
+            if not success:
+                print(f"\n{Fore.YELLOW}⚠️ Continuando con siguiente test...{Style.RESET_ALL}")
+            
+            # Delay entre tests (excepto el último)
+            if idx < len(test_files):
+                print(f"\n{Fore.CYAN}⏸️  Esperando {config.delay_between_tests}s para permitir ingesta en Fabric...{Style.RESET_ALL}")
+                print(f"{Fore.CYAN}   💡 Tip: Abre el dashboard de Fabric para ver la anomalía aparecer{Style.RESET_ALL}")
+                time.sleep(config.delay_between_tests)
+        
+        # Test de brute force (opcional)
+        if config.enable_brute_force:
+            print(f"\n{Fore.CYAN}⏸️  Esperando {config.delay_between_tests}s antes de brute force...{Style.RESET_ALL}")
+            time.sleep(config.delay_between_tests)
+            run_brute_force_test(config, server)
+        
+        # Limpieza
+        run_cleanup(config, server)
+    
+    # Resumen final
+    print_section("Demo Completada")
+    print(f"{Fore.GREEN}✅ Todos los tests han sido ejecutados{Style.RESET_ALL}\n")
+    print(f"{Fore.CYAN}📊 Próximos pasos:{Style.RESET_ALL}")
+    print(f"   1. Abre el dashboard de Fabric")
+    print(f"   2. Verifica que aparezcan las 7 anomalías")
+    print(f"   3. Valida que User/Database/Host no sean 'UNKNOWN'")
+    print(f"   4. Muestra las alertas al cliente (si configuradas)")
+    print(f"\n{Fore.YELLOW}⏱️  Recuerda: Los logs tardan 1-2 minutos en aparecer en Fabric{Style.RESET_ALL}\n")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n{Fore.YELLOW}⚠️  Demo interrumpida por el usuario{Style.RESET_ALL}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Fore.RED}❌ Error fatal: {e}{Style.RESET_ALL}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

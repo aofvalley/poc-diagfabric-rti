@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  anomaly-runner:
+    build: .
+    container_name: postgres-anomaly-tester
+    environment:
+      # PostgreSQL Configuration
+      - POSTGRES_SERVERS=${POSTGRES_SERVERS}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DATABASE=${POSTGRES_DATABASE:-adventureworks}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+
+      # Test Configuration
+      - DELAY_BETWEEN_TESTS=${DELAY_BETWEEN_TESTS:-120}
+      - ENABLE_BRUTE_FORCE=${ENABLE_BRUTE_FORCE:-false}
+      - BRUTE_FORCE_ATTEMPTS=${BRUTE_FORCE_ATTEMPTS:-20}
+
+    # Para testing local, puedes descomentar para ver logs en tiempo real
+    # stdin_open: true
+    # tty: true
+
+    # Reiniciar política (para Azure Container Apps usar "no")
+    restart: "no"
