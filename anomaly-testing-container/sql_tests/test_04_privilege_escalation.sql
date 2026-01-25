@@ -2,62 +2,65 @@
 -- TEST 4: ANOMALÍA 4 - Escalada de Privilegios (Privilege Escalation)
 -- ============================================================================
 -- 📊 Requisito: Detectar >3 operaciones de privilegios en 5 minutos
--- 🎯 Estrategia: Ejecutar secuencia de GRANTs sospechosa
+-- 🎯 Estrategia: Crear roles primero, luego ejecutar GRANTs en ráfaga
 -- ⏱️ Tiempo de ejecución: ~30 segundos
 -- 📈 Resultado esperado en dashboard (1-2 min después):
 --    - AnomalyType: Privilege Escalation
---    - PrivilegeOpsCount: 6+
+--    - PrivilegeOpsCount: 10+
 --    - Operations: GRANT, REVOKE, CREATE ROLE
 -- ============================================================================
 
--- 🏗️ PREPARACIÓN: Limpiar roles previos si existen (revocando privilegios primero)
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA sales FROM test_analyst_v3;
+-- 🏗️ PREPARACIÓN: Limpiar roles previos si existen
+DROP ROLE IF EXISTS anomaly_test_analyst;
+DROP ROLE IF EXISTS anomaly_test_developer;
+DROP ROLE IF EXISTS anomaly_test_admin;
+DROP ROLE IF EXISTS anomaly_test_readonly;
 
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA sales FROM test_developer_v3;
+-- 🏗️ Crear roles nuevos (4 operaciones CREATE ROLE)
+CREATE ROLE anomaly_test_analyst;
+CREATE ROLE anomaly_test_developer;
+CREATE ROLE anomaly_test_admin;
+CREATE ROLE anomaly_test_readonly;
 
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA sales FROM test_admin_v3;
+-- ⚠️ FASE SOSPECHOSA: Ejecutar múltiples GRANTs EN MENOS DE 5 MINUTOS
+-- Grant 1: Permisos de lectura
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO anomaly_test_analyst;
 
-DROP ROLE IF EXISTS test_analyst_v3;
+-- Grant 2: Permisos de escritura
+GRANT INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO anomaly_test_developer;
 
-DROP ROLE IF EXISTS test_developer_v3;
+-- Grant 3: Permisos completos
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO anomaly_test_admin;
 
-DROP ROLE IF EXISTS test_admin_v3;
+-- Grant 4: Herencia de roles
+GRANT anomaly_test_analyst TO anomaly_test_developer;
 
--- Crear roles nuevos
-CREATE ROLE test_analyst_v3;
+-- Grant 5: Más herencia
+GRANT anomaly_test_developer TO anomaly_test_admin;
 
-CREATE ROLE test_developer_v3;
+-- Grant 6: Permisos de schema
+GRANT USAGE ON SCHEMA public TO anomaly_test_readonly;
 
-CREATE ROLE test_admin_v3;
+-- Grant 7: Permisos SELECT específicos
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO anomaly_test_readonly;
 
--- ⚠️ FASE SOSPECHOSA: Ejecutar 6 operaciones de privilegios EN MENOS DE 5 MINUTOS
-GRANT SELECT ON ALL TABLES IN SCHEMA sales TO test_analyst_v3;
+-- Revoke 1: Revocar permisos
+REVOKE ALL ON SCHEMA public FROM anomaly_test_analyst;
 
-GRANT INSERT, UPDATE ON ALL TABLES IN SCHEMA sales TO test_developer_v3;
+-- Revoke 2: Otro revoke
+REVOKE INSERT ON ALL TABLES IN SCHEMA public FROM anomaly_test_developer;
 
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA sales TO test_admin_v3;
+-- ✅ TOTAL: 13 operaciones de privilegios (4 CREATE + 7 GRANT + 2 REVOKE)
 
-GRANT test_analyst_v3 TO test_developer_v3;
+-- 🧹 LIMPIEZA FINAL: Eliminar roles de prueba
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM anomaly_test_analyst;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM anomaly_test_developer;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM anomaly_test_admin;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM anomaly_test_readonly;
+REVOKE anomaly_test_analyst FROM anomaly_test_developer;
+REVOKE anomaly_test_developer FROM anomaly_test_admin;
 
-GRANT test_developer_v3 TO test_admin_v3;
-
-REVOKE ALL ON SCHEMA public FROM test_analyst_v3;
-
--- ✅ TOTAL: 6 operaciones de privilegios en ráfaga
-
--- 🧹 LIMPIEZA: Revocar privilegios y eliminar roles
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA sales FROM test_analyst_v3;
-
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA sales FROM test_developer_v3;
-
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA sales FROM test_admin_v3;
-
-REVOKE test_analyst_v3 FROM test_developer_v3;
-
-REVOKE test_developer_v3 FROM test_admin_v3;
-
-DROP ROLE IF EXISTS test_analyst_v3;
-
-DROP ROLE IF EXISTS test_developer_v3;
-
-DROP ROLE IF EXISTS test_admin_v3;
+DROP ROLE IF EXISTS anomaly_test_analyst;
+DROP ROLE IF EXISTS anomaly_test_developer;
+DROP ROLE IF EXISTS anomaly_test_admin;
+DROP ROLE IF EXISTS anomaly_test_readonly;

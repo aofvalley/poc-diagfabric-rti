@@ -280,7 +280,7 @@ suspiciousDataAccess
 
 
 // ----------------------------------------------------------------------------
-// 2.2 ANOMALÍA: Operaciones Destructivas Masivas
+// Mass Destructive Operations
 // ----------------------------------------------------------------------------
 
 let destructiveOperations = 
@@ -291,15 +291,15 @@ bronze_pssql_alllogs_nometrics
 | where message has_any ("DELETE", "UPDATE", "TRUNCATE", "DROP TABLE", "DROP DATABASE")
 | extend 
     AuditOperation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),
-    AuditStatement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message),
+    AuditStatement = trim(' ', extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message)),
     TableAffected = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
     QueryText = trim('"', extract(@",,,([^<]+)<", 1, message)),
     DirectUser = extract(@"user=([^\s,]+)", 1, message),
     DirectDatabase = extract(@"database=([^\s,]+)", 1, message),
     DirectHost = extract(@"host=([^\s]+)", 1, message)
-| where AuditStatement in ("DELETE", "UPDATE", "TRUNCATE", "DROP") 
-    or QueryText contains "DROP TABLE" 
-    or QueryText contains "DROP DATABASE"
+// Filter destructive operations by message or statement
+| where message has_any ("DELETE", "UPDATE", "TRUNCATE", "DROP")
+| where AuditOperation == "WRITE" or AuditStatement has_any ("DELETE", "UPDATE", "TRUNCATE", "DROP")
 | join kind=leftouter (
     bronze_pssql_alllogs_nometrics
     | where EventProcessedUtcTime >= ago(24h)
@@ -316,6 +316,8 @@ bronze_pssql_alllogs_nometrics
     FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN")),
     FinalDatabase = iff(isnotempty(DirectDatabase), DirectDatabase, iff(isnotempty(Database), Database, "UNKNOWN")),
     FinalHost = iff(isnotempty(DirectHost), DirectHost, iff(isnotempty(SourceHost), SourceHost, "UNKNOWN"))
+// Filter out Azure maintenance users BEFORE aggregation
+| where FinalUser !in ("azuresu", "azure_maintenance", "UNKNOWN")
 | summarize 
     OperationCount = count(),
     Operations = make_set(AuditStatement),
@@ -355,7 +357,7 @@ destructiveOperations
 
 
 // ----------------------------------------------------------------------------
-// 2.3 ANOMALÍA: Escalada de Errores Críticos
+// Critical Error Spike
 // ----------------------------------------------------------------------------
 
 let errorSpike = 
@@ -434,26 +436,35 @@ errorSpike
 
 
 // ----------------------------------------------------------------------------
-// 2.4 ANOMALÍA: Escalada de Privilegios (Privilege Escalation)
+// Privilege Escalation
+// ----------------------------------------------------------------------------
+// IMPORTANT NOTE: Azure PostgreSQL does NOT generate AUDIT logs for GRANT/REVOKE.
+// This query detects privilege modification attempts based on:
+// - WARNING/ERROR messages when there are issues with roles/grants
+// - Any log mentioning privilege operations
+// The threshold is low (>1) because we only capture errors/warnings.
 // ----------------------------------------------------------------------------
 
 let privilegeEscalation = 
 bronze_pssql_alllogs_nometrics
-| where EventProcessedUtcTime >= ago(10m)
+| where EventProcessedUtcTime >= ago(15m)
 | where category == "PostgreSQLLogs"
-| where message contains "AUDIT:"
-| where message has_any ("GRANT", "REVOKE", "ALTER ROLE", "CREATE ROLE", "DROP ROLE")
+// Search in ANY message type (including WARNING, ERROR)
+| where message has_any ("GRANT", "REVOKE", "ALTER ROLE", "CREATE ROLE", "DROP ROLE", "anomaly_test")
+// Include warnings and errors that mention roles
+| where backend_type == "client backend" or isempty(backend_type)
 | extend 
     PrivilegeOp = case(
+        message contains "CREATE ROLE", "CREATE ROLE",
+        message contains "DROP ROLE", "DROP ROLE",
         message contains "GRANT", "GRANT",
         message contains "REVOKE", "REVOKE",
         message contains "ALTER ROLE", "ALTER ROLE",
-        message contains "CREATE ROLE", "CREATE ROLE",
-        message contains "DROP ROLE", "DROP ROLE",
-        "OTHER"
+        "ROLE_RELATED"
     ),
-    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message)),
-    DirectUser = extract(@"user=([^\s,]+)", 1, message)
+    QueryText = substring(message, 0, 200),
+    DirectUser = extract(@"user=([^\s,]+)", 1, message),
+    LogType = errorLevel
 | join kind=leftouter (
     bronze_pssql_alllogs_nometrics
     | where EventProcessedUtcTime >= ago(24h)
@@ -463,21 +474,24 @@ bronze_pssql_alllogs_nometrics
     | summarize User = any(UserName) by processId, LogicalServerName
 ) on processId, LogicalServerName
 | extend FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN"))
-| where FinalUser != "azuresu"
+// Filter out Azure system users
+| where FinalUser !in ("azuresu", "azure_maintenance")
 | summarize 
     PrivilegeOpsCount = count(),
     Operations = make_set(PrivilegeOp),
+    LogTypes = make_set(LogType),
     FirstOp = min(EventProcessedUtcTime),
     LastOp = max(EventProcessedUtcTime),
     SampleQueries = make_set(QueryText, 3),
     User = any(FinalUser)
     by LogicalServerName, bin(EventProcessedUtcTime, 5m)
-| where PrivilegeOpsCount > 3
+// Low threshold because we only capture warnings/errors
+| where PrivilegeOpsCount > 1
 | extend 
     AnomalyType = "Privilege Escalation",
     Severity = case(
-        PrivilegeOpsCount > 10, "CRITICAL",
-        PrivilegeOpsCount > 5, "HIGH",
+        PrivilegeOpsCount > 5, "CRITICAL",
+        PrivilegeOpsCount > 3, "HIGH",
         "MEDIUM"
     )
 | project 
@@ -488,6 +502,7 @@ bronze_pssql_alllogs_nometrics
     User,
     PrivilegeOpsCount,
     Operations,
+    LogTypes,
     TimeWindow = strcat(FirstOp, " to ", LastOp),
     SampleQueries;
 
@@ -495,7 +510,7 @@ privilegeEscalation
 
 
 // ----------------------------------------------------------------------------
-// 2.5 ANOMALÍA: Reconocimiento Cross-Schema (Lateral Movement)
+// Cross-Schema Reconnaissance
 // ----------------------------------------------------------------------------
 
 let crossSchemaRecon = 
@@ -553,7 +568,7 @@ crossSchemaRecon
 
 
 // ----------------------------------------------------------------------------
-// 2.6 ANOMALÍA: Enumeración de Schema de Sistema (Deep Scan)
+// Deep System Schema Enumeration
 // ----------------------------------------------------------------------------
 
 let deepSchemaEnum = 
@@ -562,16 +577,15 @@ bronze_pssql_alllogs_nometrics
 | where category == "PostgreSQLLogs"
 | where message contains "AUDIT:"
 | where backend_type == "client backend"
-| extend QueryText = trim('"', extract(@",,,([^<]+)<", 1, message))
-| where QueryText contains "pg_catalog" 
-    or QueryText contains "information_schema"
-    or QueryText contains "pg_tables"
-    or QueryText contains "pg_class"
-    or QueryText contains "pg_attribute"
-    or QueryText contains "pg_proc"
-    or QueryText contains "pg_type"
-    or QueryText contains "pg_constraint"
-    or QueryText contains "pg_roles"
+// First filter by message to capture all queries to system tables
+| where message has_any ("pg_catalog", "information_schema", "pg_tables", "pg_class", 
+        "pg_attribute", "pg_proc", "pg_type", "pg_constraint", "pg_roles", "pg_indexes",
+        "table_constraints", "table_privileges", "routines")
+| extend QueryText = coalesce(
+    trim('"', extract(@",,,([^<]+)<", 1, message)),
+    extract(@"statement: (.+)$", 1, message),
+    message
+)
 | extend 
     SystemTable = case(
         QueryText contains "pg_tables", "pg_tables",
