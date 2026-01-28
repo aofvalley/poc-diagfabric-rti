@@ -27,6 +27,10 @@ from typing import List, Tuple, Optional
 import psycopg2
 from psycopg2 import OperationalError, ProgrammingError
 from colorama import Fore, Style, init
+from dotenv import load_dotenv
+
+# Cargar variables desde .env
+load_dotenv()
 
 # Inicializar colorama para Windows compatibility
 init(autoreset=True)
