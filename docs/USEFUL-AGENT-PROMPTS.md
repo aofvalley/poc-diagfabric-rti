@@ -1,7 +1,6 @@
-# Useful Prompts for Data Agent / Prompts Útiles para el Data Agent
+# Useful Prompts for Data Agent
 
 This file contains a list of effective prompts to get detailed information from the Data Agent, even when no critical anomalies are detected.
-Este archivo contiene una lista de prompts efectivos para obtener información detallada del Data Agent, incluso cuando no se detectan anomalías críticas.
 
 ---
 
@@ -21,22 +20,3 @@ Este archivo contiene una lista de prompts efectivos para obtener información d
 
 5.  **"Show me the error trend for the last 6 hours broken down by error type."**
     *(Health visualization)*
-
----
-
-## 🇪🇸 Prompts en Español
-
-1.  **"Dame un resumen de actividad del servidor en la última hora (conexiones, queries y errores)."**
-    *(Muestra métricas generales sin depender de ML)*
-
-2.  **"Lista los usuarios únicos que se han conectado hoy y su volumen de actividad."**
-    *(Análisis de usuarios)*
-
-3.  **"Revisa si hay algún intento de fuerza bruta (fallos de autenticación) desde alguna IP en las últimas 24 horas."**
-    *(Chequeo de seguridad específico)*
-
-4.  **"¿Hubo operaciones de privilegios (GRANT, REVOKE) en los últimos 7 días?"**
-    *(Auditoría crítica)*
-
-5.  **"¿Cuál es la tendencia de errores en las últimas 6 horas? Desglósalo por tipo."**
-    *(Visualización de salud)*

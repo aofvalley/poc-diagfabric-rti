@@ -1,12 +1,12 @@
-# 🚀 Quick Start - Queries para Dashboard Real-Time
+# 🚀 Quick Start - Queries for Real-Time Dashboard
 
-Este archivo contiene las queries más importantes ya listas para copiar y pegar directamente en tu dashboard de Microsoft Fabric Real-Time Intelligence.
+This file contains the most important queries ready to copy and paste directly into your Microsoft Fabric Real-Time Intelligence dashboard.
 
 ---
 
-## 📊 DASHBOARD 1: Anomalías en Tiempo Real
+## 📊 DASHBOARD 1: Real-Time Anomalies
 
-### Query Principal: Todas las Anomalías (Top 100)
+### Main Query: All Anomalies (Top 100)
 ```kql
 // ============================================================================
 // DASHBOARD PRINCIPAL - TODAS LAS ANOMALÍAS
@@ -136,16 +136,16 @@ union (suspiciousDataAccess), (destructiveOperations), (errorSpike), (privilegeE
 | take 100;
 ```
 
-**Config Dashboard**:
-- **Tipo**: Tabla
-- **Auto-refresh**: 1 minuto
-- **Columnas visibles**: TimeGenerated, AnomalyType, Severity, ServerName, User
+**Dashboard Config**:
+- **Type**: Table
+- **Auto-refresh**: 1 minute
+- **Visible columns**: TimeGenerated, AnomalyType, Severity, ServerName, User
 
 ---
 
-## 📈 DASHBOARD 2: Métricas en Tiempo Real
+## 📈 DASHBOARD 2: Real-Time Metrics
 
-### Tile 1: Actividad General por Servidor (1h)
+### Tile 1: General Activity by Server (1h)
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(1h)
@@ -162,7 +162,7 @@ bronze_pssql_alllogs_nometrics
 
 ---
 
-### Tile 2: Distribución de Operaciones AUDIT (6h)
+### Tile 2: AUDIT Operations Distribution (6h)
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(6h)
@@ -178,7 +178,7 @@ bronze_pssql_alllogs_nometrics
 
 ---
 
-### Tile 3: Timeline de Operaciones por Tipo (1h)
+### Tile 3: Operations Timeline by Type (1h)
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(1h)
@@ -198,7 +198,7 @@ bronze_pssql_alllogs_nometrics
 
 ---
 
-### Tile 4: TOP 10 Usuarios por Actividad (24h)
+### Tile 4: TOP 10 Users by Activity (24h)
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(24h)
@@ -214,11 +214,11 @@ bronze_pssql_alllogs_nometrics
 | top 10 by TotalActivity desc
 | project UserName, TotalActivity, AuditLogs, Connections, Errors, LastActivity;
 ```
-**Config**: Tabla | Auto-refresh: 10 min
+**Config**: Table | Auto-refresh: 10 min
 
 ---
 
-### Tile 5: Errores por Categoría (24h)
+### Tile 5: Errors by Category (24h)
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(24h)
@@ -240,7 +240,7 @@ bronze_pssql_alllogs_nometrics
 
 ---
 
-### Tile 6: Fallos de Autenticación (24h)
+### Tile 6: Authentication Failures (24h)
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(24h)
@@ -265,11 +265,11 @@ bronze_pssql_alllogs_nometrics
 | take 20
 | project UserName, ClientHost, FailedAttempts, ThreatLevel, FirstAttempt, LastAttempt;
 ```
-**Config**: Tabla | Auto-refresh: 10 min
+**Config**: Table | Auto-refresh: 10 min
 
 ---
 
-### Tile 7: TOP Hosts por Conexiones (24h)
+### Tile 7: TOP Hosts by Connections (24h)
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(24h)
@@ -293,13 +293,13 @@ bronze_pssql_alllogs_nometrics
 | top 10 by TotalConnections desc
 | project ClientHost, TotalConnections, UniqueUsers, Errors, ErrorRate, Riesgo, LastSeen;
 ```
-**Config**: Tabla | Auto-refresh: 10 min
+**Config**: Table | Auto-refresh: 10 min
 
 ---
 
-## 🎯 DASHBOARD 3: Anomalías ML (Baseline Deviation)
+## 🎯 DASHBOARD 3: ML Anomalies (Baseline Deviation)
 
-### Query ML: Desviación del Baseline
+### ML Query: Baseline Deviation
 ```kql
 postgres_activity_metrics
 | where Timestamp >= ago(7d)
@@ -334,13 +334,13 @@ postgres_activity_metrics
 | order by abs(DeviationScore) desc
 | take 20;
 ```
-**Config**: Tabla | Auto-refresh: 5 min
+**Config**: Table | Auto-refresh: 5 min
 
 ---
 
-## 🔍 DASHBOARD 4: Monitoreo de Salud del Sistema
+## 🔍 DASHBOARD 4: System Health Monitoring
 
-### Query: Frescura de Datos
+### Query: Data Freshness
 ```kql
 bronze_pssql_alllogs_nometrics
 | summarize 
@@ -355,7 +355,7 @@ bronze_pssql_alllogs_nometrics
 
 ---
 
-### Query: Cobertura de AUDIT Logs
+### Query: AUDIT Logs Coverage
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(1h)
@@ -369,11 +369,11 @@ bronze_pssql_alllogs_nometrics
     ErrorRate = round((todouble(ErrorLogs) / TotalLogs) * 100, 2)
 | project LogicalServerName, TotalLogs, AuditCoverage, ErrorRate;
 ```
-**Config**: Tabla | Auto-refresh: 5 min
+**Config**: Table | Auto-refresh: 5 min
 
 ---
 
-### Query: Estado de Tablas de Métricas
+### Query: Metrics Tables Status
 ```kql
 postgres_activity_metrics
 | summarize 
@@ -387,82 +387,82 @@ postgres_activity_metrics
     DelayMinutes = datetime_diff('minute', now(), LastUpdate)
 | project ServerName, Status, DelayMinutes, LastUpdate, TotalRecords, AvgActivity, MaxErrors;
 ```
-**Config**: Tabla | Auto-refresh: 5 min
+**Config**: Table | Auto-refresh: 5 min
 
 ---
 
-## 📋 Checklist de Implementación
+## 📋 Implementation Checklist
 
-### ✅ Paso 1: Crear Infraestructura (una sola vez)
-Ejecuta todas las queries de la **SECCIÓN 1** del archivo `UNIFIED-ANOMALY-DETECTION.kql`:
-- [ ] Crear tabla `postgres_activity_metrics`
-- [ ] Crear función `postgres_activity_metrics_transform()`
-- [ ] Configurar Update Policy
-- [ ] Cargar datos históricos (30 días)
-- [ ] Crear tabla `postgres_error_metrics`
-- [ ] Crear tabla `postgres_user_metrics`
+### ✅ Step 1: Create Infrastructure (one-time setup)
+Execute all queries from **SECTION 1** of the `UNIFIED-ANOMALY-DETECTION.kql` file:
+- [ ] Create table `postgres_activity_metrics`
+- [ ] Create function `postgres_activity_metrics_transform()`
+- [ ] Configure Update Policy
+- [ ] Load historical data (30 days)
+- [ ] Create table `postgres_error_metrics`
+- [ ] Create table `postgres_user_metrics`
 
-### ✅ Paso 2: Configurar Dashboard 1 - Anomalías
-- [ ] Crear nuevo Dashboard "PostgreSQL - Anomalías en Tiempo Real"
-- [ ] Pegar query principal (Dashboard 1)
-- [ ] Configurar auto-refresh a 1 minuto
-- [ ] Agregar filtros por ServerName y Severity
+### ✅ Step 2: Configure Dashboard 1 - Anomalies
+- [ ] Create new Dashboard "PostgreSQL - Real-Time Anomalies"
+- [ ] Paste main query (Dashboard 1)
+- [ ] Configure auto-refresh to 1 minute
+- [ ] Add filters by ServerName and Severity
 
-### ✅ Paso 3: Configurar Dashboard 2 - Métricas
-- [ ] Crear nuevo Dashboard "PostgreSQL - Métricas Operacionales"
-- [ ] Agregar Tile 1 (Actividad General) - Timechart
-- [ ] Agregar Tile 2 (Distribución AUDIT) - Piechart
-- [ ] Agregar Tile 3 (Timeline Operaciones) - Timechart
-- [ ] Agregar Tile 4 (TOP Usuarios) - Tabla
-- [ ] Agregar Tile 5 (Errores Categoría) - Areachart
-- [ ] Agregar Tile 6 (Fallos Auth) - Tabla
-- [ ] Agregar Tile 7 (TOP Hosts) - Tabla
+### ✅ Step 3: Configure Dashboard 2 - Metrics
+- [ ] Create new Dashboard "PostgreSQL - Operational Metrics"
+- [ ] Add Tile 1 (General Activity) - Timechart
+- [ ] Add Tile 2 (AUDIT Distribution) - Piechart
+- [ ] Add Tile 3 (Operations Timeline) - Timechart
+- [ ] Add Tile 4 (TOP Users) - Table
+- [ ] Add Tile 5 (Errors Category) - Areachart
+- [ ] Add Tile 6 (Auth Failures) - Table
+- [ ] Add Tile 7 (TOP Hosts) - Table
 
-### ✅ Paso 4: Configurar Dashboard 3 - ML
-- [ ] Configurar Anomaly Detector en Fabric UI (ver README-UNIFIED-SETUP.md)
-- [ ] Crear Dashboard "PostgreSQL - ML Anomalies"
-- [ ] Pegar query ML (Dashboard 3)
-- [ ] Configurar auto-refresh a 5 minutos
+### ✅ Step 4: Configure Dashboard 3 - ML
+- [ ] Configure Anomaly Detector in Fabric UI (see README-UNIFIED-SETUP.md)
+- [ ] Create Dashboard "PostgreSQL - ML Anomalies"
+- [ ] Paste ML query (Dashboard 3)
+- [ ] Configure auto-refresh to 5 minutes
 
-### ✅ Paso 5: Configurar Dashboard 4 - Salud
-- [ ] Crear Dashboard "PostgreSQL - System Health"
-- [ ] Agregar query Frescura de Datos (KPI)
-- [ ] Agregar query Cobertura AUDIT (Tabla)
-- [ ] Agregar query Estado Métricas (Tabla)
+### ✅ Step 5: Configure Dashboard 4 - Health
+- [ ] Create Dashboard "PostgreSQL - System Health"
+- [ ] Add Data Freshness query (KPI)
+- [ ] Add AUDIT Coverage query (Table)
+- [ ] Add Metrics Status query (Table)
 
-### ✅ Paso 6: Configurar Alertas
-- [ ] Crear alerta para Data Exfiltration (Severity = CRITICAL)
-- [ ] Crear alerta para Destructive Operations (Severity >= HIGH)
-- [ ] Crear alerta para Privilege Escalation (Severity >= HIGH)
-- [ ] Crear alerta para ML Anomalies (DeviationScore > 3.0)
+### ✅ Step 6: Configure Alerts
+- [ ] Create alert for Data Exfiltration (Severity = CRITICAL)
+- [ ] Create alert for Destructive Operations (Severity >= HIGH)
+- [ ] Create alert for Privilege Escalation (Severity >= HIGH)
+- [ ] Create alert for ML Anomalies (DeviationScore > 3.0)
 
 ---
 
-## 🎨 Personalización de Dashboards
+## 🎨 Dashboard Customization
 
-### Colores Recomendados por Severidad
-- **CRITICAL**: 🔴 Rojo (`#DC3545`)
-- **HIGH**: 🟠 Naranja (`#FD7E14`)
-- **MEDIUM**: 🟡 Amarillo (`#FFC107`)
-- **LOW**: 🟢 Verde (`#28A745`)
+### Recommended Colors by Severity
+- **CRITICAL**: 🔴 Red (`#DC3545`)
+- **HIGH**: 🟠 Orange (`#FD7E14`)
+- **MEDIUM**: 🟡 Yellow (`#FFC107`)
+- **LOW**: 🟢 Green (`#28A745`)
 
-### Iconos Recomendados
+### Recommended Icons
 - **Data Exfiltration**: 📥 (download)
 - **Destructive Operations**: 💣 (bomb)
 - **Error Spike**: ⚡ (lightning)
 - **Privilege Escalation**: 🔐 (lock)
 - **ML Anomaly**: 🤖 (robot)
 
-### Layout Sugerido
+### Suggested Layout
 ```
-Dashboard 1: Anomalías
+Dashboard 1: Anomalies
 ┌─────────────────────────┐
-│  Tabla Principal (100%) │
+│  Main Table (100%)      │
 │  [TimeGenerated | Type  │
 │   | Severity | Server]  │
 └─────────────────────────┘
 
-Dashboard 2: Métricas
+Dashboard 2: Metrics
 ┌──────────┬──────────┐
 │ Tile 1   │ Tile 2   │
 │ (50%)    │ (50%)    │
@@ -483,18 +483,18 @@ Dashboard 3: ML
 │   | Score | Baseline]   │
 └─────────────────────────┘
 
-Dashboard 4: Salud
+Dashboard 4: Health
 ┌─────┬─────┬─────┬─────┐
 │ KPI │ KPI │ KPI │ KPI │
 │ (25%)     (25%)   (25%)│
 ├─────────────────────────┤
-│ Tabla Cobertura (100%)  │
+│ Coverage Table (100%)   │
 ├─────────────────────────┤
-│ Tabla Estado (100%)     │
+│ Status Table (100%)     │
 └─────────────────────────┘
 ```
 
 ---
 
-**Versión**: 1.0 Quick Start  
-**Última actualización**: 2026-01-25
+**Version**: 1.0 Quick Start  
+**Last updated**: 2026-01-25
