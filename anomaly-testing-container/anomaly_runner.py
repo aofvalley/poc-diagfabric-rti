@@ -60,6 +60,7 @@ class Config:
         self.background_traffic_intensity = os.getenv('BACKGROUND_TRAFFIC_INTENSITY', 'medium').lower()
         self.baseline_duration = int(os.getenv('BASELINE_DURATION', '180'))  # 3 min baseline
         self.anomaly_spacing = int(os.getenv('ANOMALY_SPACING', '300'))  # 5 min entre anomalías
+        self.total_duration_minutes = int(os.getenv('TOTAL_DURATION_MINUTES', '20'))  # duración total de la demo
         
         self.sql_tests_dir = os.path.join(os.path.dirname(__file__), 'sql_tests')
         
@@ -415,6 +416,7 @@ def main():
         print(f"   Intensidad de tráfico: {Fore.CYAN}{config.background_traffic_intensity}{Style.RESET_ALL}")
         print(f"   Baseline inicial: {Fore.CYAN}{config.baseline_duration}s{Style.RESET_ALL}")
         print(f"   Espacio entre anomalías: {Fore.CYAN}{config.anomaly_spacing}s{Style.RESET_ALL}")
+        print(f"   Duración total objetivo: {Fore.CYAN}{config.total_duration_minutes} min{Style.RESET_ALL}")
     
     # Obtener lista de tests SQL (ordenados)
     test_files = sorted(glob.glob(os.path.join(config.sql_tests_dir, 'test_[0-9]*.sql')))
@@ -460,24 +462,36 @@ def main():
             print(f"{Fore.CYAN}   💡 Abre el dashboard de Fabric y observa el tráfico normal{Style.RESET_ALL}")
             time.sleep(config.baseline_duration)
         
-        # Ejecutar anomalías gradualmente
-        for idx, test_file in enumerate(test_files, 1):
-            basename = os.path.basename(test_file)
-            test_key = basename.split('_')[0] + '_' + basename.split('_')[1]
-            test_name = test_names.get(test_key, basename)
-            
-            # Ejecutar anomalía
-            success = run_test(config, server, test_file, idx, test_name)
-            
-            if not success:
-                print(f"\n{Fore.YELLOW}⚠️ Continuando...{Style.RESET_ALL}")
-            
-            # Volver a normalidad (excepto último test)
-            if idx < len(test_files):
-                print(f"\n{Fore.GREEN}✅ Volviendo a actividad normal...{Style.RESET_ALL}")
-                print(f"{Fore.CYAN}⏸️  Esperando {config.anomaly_spacing}s hasta próxima anomalía{Style.RESET_ALL}")
-                print(f"{Fore.CYAN}   💡 Observa en Fabric cómo la anomalía desaparece y vuelve a normal{Style.RESET_ALL}")
-                time.sleep(config.anomaly_spacing)
+        # Ejecutar anomalías gradualmente por rondas hasta completar duración
+        start_time = time.time()
+        end_time = start_time + (config.total_duration_minutes * 60)
+        round_num = 1
+
+        while time.time() < end_time:
+            print_section(f"Ronda {round_num} de anomalías")
+
+            for idx, test_file in enumerate(test_files, 1):
+                if time.time() >= end_time:
+                    break
+
+                basename = os.path.basename(test_file)
+                test_key = basename.split('_')[0] + '_' + basename.split('_')[1]
+                test_name = test_names.get(test_key, basename)
+
+                # Ejecutar anomalía
+                success = run_test(config, server, test_file, idx, test_name)
+
+                if not success:
+                    print(f"\n{Fore.YELLOW}⚠️ Continuando...{Style.RESET_ALL}")
+
+                # Volver a normalidad (excepto último test de la ronda)
+                if idx < len(test_files) and time.time() < end_time:
+                    print(f"\n{Fore.GREEN}✅ Volviendo a actividad normal...{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}⏸️  Esperando {config.anomaly_spacing}s hasta próxima anomalía{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}   💡 Observa en Fabric cómo la anomalía desaparece y vuelve a normal{Style.RESET_ALL}")
+                    time.sleep(config.anomaly_spacing)
+
+            round_num += 1
         
         # >>> DETENER TRÁFICO DE FONDO
         if traffic_gen:

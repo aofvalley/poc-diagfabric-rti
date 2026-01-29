@@ -227,10 +227,71 @@ az containerapp job start \
   --resource-group rg-anomaly-tester
 ```
 
+## � Setup de pgAudit (IMPORTANTE)
+
+**⚠️ REQUISITO CRÍTICO**: Para que las anomalías se detecten correctamente, pgaudit DEBE estar habilitado y configurado correctamente.
+
+### Opción A: Setup Automático (Recomendado)
+
+```bash
+# Ejecutar el script de setup automático
+python setup_pgaudit.py
+```
+
+Este script:
+- ✅ Verifica que pgaudit está instalado
+- ✅ Configura pgaudit a nivel de base de datos
+- ✅ Habilita logging de catálogos de sistema (necesario para anomalía #6)
+- ✅ Verifica la configuración aplicada
+
+### Opción B: Setup Manual (SQL)
+
+```bash
+# Ejecutar el script SQL manualmente
+psql -h server.postgres.database.azure.com -U adminuser -d adventureworks -f sql_tests/setup_pgaudit.sql
+```
+
+O conectarte a PostgreSQL y ejecutar:
+
+```sql
+-- Configurar pgaudit a nivel de base de datos
+ALTER DATABASE adventureworks SET pgaudit.log = 'READ, WRITE, DDL, MISC';
+ALTER DATABASE adventureworks SET pgaudit.log_catalog = 'on';
+ALTER DATABASE adventureworks SET pgaudit.log_parameter = 'on';
+
+-- Reconectar para aplicar cambios
+```
+
+### Verificar que pgaudit está funcionando
+
+```sql
+-- Debe mostrar las configuraciones correctas
+SELECT name, setting, source
+FROM pg_settings
+WHERE name LIKE 'pgaudit%';
+```
+
+**Configuración esperada:**
+- `pgaudit.log` = `'READ, WRITE, DDL, MISC'` o `'ALL'`
+- `pgaudit.log_catalog` = `'on'`
+- `pgaudit.log_parameter` = `'on'`
+
+### Configuración en Azure Portal (si pgaudit no está instalado)
+
+Si pgaudit no está instalado en tu servidor:
+
+1. Ve a tu PostgreSQL Flexible Server en Azure Portal
+2. Settings → **Server parameters**
+3. Busca `shared_preload_libraries` y añade `pgaudit`
+4. Busca `pgaudit.log` y configúralo a `ALL`
+5. Busca `pgaudit.log_catalog` y ponlo en `ON`
+6. **Reinicia el servidor** para aplicar cambios
+
 ## 📊 Flujo de Demo Recomendado
 
 1. **Preparación** (antes del cliente):
-   - ✅ Validar que pgaudit está configurado
+   - ✅ **Ejecutar `python setup_pgaudit.py`** (CRÍTICO)
+   - ✅ Validar que pgaudit está configurado correctamente
    - ✅ Validar que Fabric Event Stream está ingiriendo logs
    - ✅ Validar que dashboard de Fabric está funcionando
 
@@ -266,8 +327,37 @@ az containerapp job start \
 ### Problema: "Las anomalías no aparecen en Fabric"
 
 **Solución**: Verificar:
-1. Diagnostic Settings habilitado en PostgreSQL → Event Hub
-2. Event Stream en Fabric recibiendo datos
+1. **pgaudit está habilitado y configurado** - Ejecutar `python setup_pgaudit.py`
+2. Diagnostic Settings habilitado en PostgreSQL → Event Hub
+3. Event Stream en Fabric recibiendo datos
+4. Dashboard refresh automático habilitado
+
+### Problema: "Anomalía #6 (Deep Enumeration) no se detecta"
+
+**Diagnóstico**: Esta anomalía requiere `pgaudit.log_catalog = 'on'`
+
+**Solución**:
+```bash
+# Ejecutar setup automático
+python setup_pgaudit.py
+
+# O manualmente:
+ALTER DATABASE adventureworks SET pgaudit.log_catalog = 'on';
+-- Reconectar para aplicar
+```
+
+**Verificar en Fabric**: La query KQL debe mostrar mensajes con `AUDIT:` o consultas a tablas `pg_*` y `information_schema.*`
+
+### Problema: "Los logs no contienen 'AUDIT:' en el mensaje"
+
+**Causa**: pgaudit no está habilitado a nivel de servidor o base de datos
+
+**Solución**:
+1. Azure Portal → PostgreSQL Server → Server Parameters
+2. Verificar: `shared_preload_libraries` incluye `pgaudit`
+3. Verificar: `pgaudit.log` = `ALL` o contiene `READ`
+4. Ejecutar: `python setup_pgaudit.py` para configuración a nivel de BD
+5. Reiniciar servidor si es necesario
 3. Esperar 2-3 minutos para ingesta
 4. Queries KQL en dashboard tienen thresholds correctos
 

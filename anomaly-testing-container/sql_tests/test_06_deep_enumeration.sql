@@ -8,7 +8,11 @@
 --    - AnomalyType: Deep Schema Enumeration
 --    - SystemTableQueries: 20+
 --    - TablesScanned: pg_tables, pg_class, pg_attribute, pg_proc...
+-- ⚠️ IMPORTANTE: Requiere pgaudit habilitado con log_catalog='on'
 -- ============================================================================
+
+-- 🔧 Verificación rápida de pgaudit (descomenta para debug)
+-- SELECT setting FROM pg_settings WHERE name = 'pgaudit.log_catalog';
 
 -- 🔍 FASE 1: Mapeo de estructura de tablas (5 queries)
 SELECT schemaname, tablename, tableowner FROM pg_tables WHERE schemaname NOT LIKE 'pg_%' LIMIT 5;
