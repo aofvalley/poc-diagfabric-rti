@@ -1,270 +1,146 @@
-# Data Source Instructions for AI Agent
+# PostgreSQL Security Monitoring Data Source
 
-## 📝 DATA SOURCE DESCRIPTION (Max 800 chars)
+## 📝 Data Source Description (800 chars)
 
-```
-PostgreSQL Real-Time Intelligence Database with ML Anomaly Detection
+Real-time PostgreSQL security and performance monitoring database with ML anomaly detection capabilities.
 
-This Kusto database contains real-time diagnostic logs from Azure PostgreSQL Flexible Servers and pre-aggregated metrics tables for ML-based anomaly detection.
+**Primary Tables**:
+- `bronze_pssql_alllogs_nometrics`: Raw logs (connections, audits, errors) from Azure PostgreSQL
+- `postgres_activity_metrics`: 5-min ML metrics with temporal dimensions for baseline detection
+- `postgres_error_metrics`: Per-minute error aggregations
+- `postgres_user_metrics`: Hourly per-user query patterns
 
-Primary Tables:
-• bronze_pssql_alllogs_nometrics: Raw PostgreSQL logs (connections, audits, errors) streamed via Event Hub
-• postgres_activity_metrics: 5-min aggregated activity with temporal dimensions (HourOfDay, DayOfWeek) for ML baseline detection
-• postgres_error_metrics: 1-min error rates by category
-• postgres_user_metrics: Hourly per-user query patterns
+**Key Capabilities**: Security threat detection (brute force, SQL injection, privilege escalation, data exfiltration), ML-based anomaly detection, compliance auditing, performance monitoring.
 
-Use cases: Security monitoring (data exfiltration, privilege escalation, brute force), ML anomaly detection (series_decompose_anomalies), compliance auditing, performance troubleshooting.
+**Data Freshness**: Real-time (1-5 sec latency). Requires pgaudit extension for query auditing.
 
-Data freshness: Real-time (1-5 sec latency). Requires pgaudit extension for query-level auditing.
-```
-
-**Character count: 784/800** ✅
+**Best For**: Security analysts, compliance teams, database administrators investigating threats and anomalies.
 
 ---
 
-## 📋 DATA SOURCE INSTRUCTIONS (Max 15,000 chars)
+## 📋 Data Source Instructions (15,000 chars)
 
-```markdown
-# PostgreSQL Monitoring - Data Source Instructions
+### 1. Table Schemas
 
-## 1. TABLE SCHEMAS
+**bronze_pssql_alllogs_nometrics** (Raw Logs - Real-time Stream)
 
-### 1.1 bronze_pssql_alllogs_nometrics (Raw Logs)
-| Column | Type | Description | Example |
-|--------|------|-------------|---------|
-| EventProcessedUtcTime | datetime | Event Hub processing time (USE FOR FILTERS) | 2025-11-20T14:30:45Z |
-| TimeGenerated | datetime | PostgreSQL log timestamp | 2025-11-20T14:30:44Z |
-| LogicalServerName | string | Server name | advpsqlfxuk |
-| category | string | Log category | PostgreSQLLogs |
-| message | string | Full log message (contains all info) | AUDIT: SESSION,12345,1,READ,SELECT,public.users,,,\"SELECT * FROM users\" |
-| errorLevel | string | Severity (LOG, WARNING, ERROR, FATAL, PANIC) | ERROR |
-| sqlerrcode | string | PostgreSQL error code (00000 = no error) | 28P01 |
-| processId | long | Backend process ID (for session correlation) | 12345 |
-| backend_type | string | Process type (client backend, autovacuum, etc.) | client backend |
+| Column | Type | Usage |
+|--------|------|-------|
+| `EventProcessedUtcTime` | datetime | **USE FOR ALL TIME FILTERS** (1-5s latency) |
+| `message` | string | Full log text (extract user, database, query) |
+| `errorLevel` | string | LOG, WARNING, ERROR, FATAL, PANIC |
+| `sqlerrcode` | string | PostgreSQL error code (00000 = success) |
+| `processId` | long | **Session ID - join key for correlating logs** |
+| `backend_type` | string | "client backend" (user), autovacuum, etc. |
+| `LogicalServerName` | string | PostgreSQL server name |
+| `category` | string | Always "PostgreSQLLogs" |
 
-### 1.2 postgres_activity_metrics (ML Primary Table)
-Auto-aggregated every 5 minutes. Use for ML anomaly detection.
-
-| Column | Type | Description | ML Use Case |
-|--------|------|-------------|-------------|
-| Timestamp | datetime | 5-min bucket | Time series analysis |
-| ServerName | string | PostgreSQL server | Group by dimension |
-| HourOfDay | int | 0-23 | Off-hours activity detection |
-| DayOfWeek | int | 0=Sun, 6=Sat | Weekend pattern detection |
-| ActivityCount | long | Total log events | Overall activity baseline |
-| AuditLogs | long | AUDIT log count | Query volume tracking |
-| Errors | long | ERROR/FATAL/PANIC | Error spike detection |
-| Connections | long | New connections | Connection pattern analysis |
-| UniqueUsers | long | Distinct users | User cardinality anomalies |
-| SelectOps | long | SELECT/COPY/READ | Data exfiltration monitoring |
-| WriteOps | long | INSERT/UPDATE/DELETE | Write activity tracking |
-| DDLOps | long | CREATE/DROP/ALTER | Schema change monitoring |
-| PrivilegeOps | long | GRANT/REVOKE/ALTER ROLE | **🔴 SECURITY CRITICAL** |
-
-**Key Detection Rules**:
-- `PrivilegeOps > 0` → Immediate security review
-- `HourOfDay < 9 OR > 17` + `DDLOps > 0` → Off-hours schema changes
-- `UniqueUsers` spike > 2x baseline → Credential compromise
-
-### 1.3 postgres_error_metrics
-Auto-aggregated every 1 minute.
-
-| Column | Type | Values |
-|--------|------|--------|
-| Timestamp | datetime | 1-min bucket |
-| ServerName | string | Server name |
-| ErrorRate | long | Errors per minute |
-| ErrorTypes | string | Authentication, Permission, Connection, Other |
-
-### 1.4 postgres_user_metrics
-Auto-aggregated every 1 hour.
+**postgres_activity_metrics** (ML Metrics - 5-min Aggregates)
 
 | Column | Type | Description |
 |--------|------|-------------|
-| Timestamp | datetime | 1-hour bucket |
-| UserName | string | Database user |
-| ServerName | string | Server name |
-| QueryCount | long | Total queries |
-| SelectQueries | long | SELECT/COPY count |
-| DestructiveOps | long | DELETE/UPDATE/TRUNCATE/DROP |
+| `Timestamp` | datetime | 5-min bucket |
+| `ServerName` | string | Server identifier |
+| `HourOfDay` | int | 0-23 (detect off-hours activity) |
+| `DayOfWeek` | int | 0=Sunday, 6=Saturday |
+| `ActivityCount` | long | Total events |
+| `UniqueUsers` | long | Distinct users (cardinality anomaly) |
+| `SelectOps` | long | SELECT/COPY operations (exfiltration) |
+| `WriteOps` | long | INSERT/UPDATE/DELETE |
+| `DDLOps` | long | CREATE/DROP/ALTER (schema changes) |
+| `PrivilegeOps` | long | **🔴 CRITICAL: GRANT/REVOKE/ALTER ROLE** |
+| `Errors` | long | Error count |
 
----
+**postgres_error_metrics** (1-min errorRate by type)
+**postgres_user_metrics** (1-hour queryCount by user)
 
-## 2. DATA PATTERNS & MESSAGE FORMATS
+### 2. Critical Query Patterns
 
-### 2.1 CONNECTION Logs (User/Database/Host extraction)
-**Message Pattern**:
-```
-connection authorized: user=USERNAME database=DBNAME host=IP_ADDRESS SSL enabled
-```
-
-**Extraction**:
+**Session Correlation** (Required for user/database context):
 ```kql
-| extend 
-    UserName = extract(@"user=([^\s,]+)", 1, message),
-    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
-    ClientHost = extract(@"host=([^\s]+)", 1, message)
-```
-
-**Critical**: CONNECTION logs are the ONLY source of user/database/host. Must correlate with AUDIT logs via processId.
-
-### 2.2 AUDIT Logs (Query Execution)
-**Message Pattern**:
-```
-AUDIT: SESSION,<pid>,<seq>,<operation>,<statement>,<object>,,,<query_text>
-```
-
-**Example**:
-```
-AUDIT: SESSION,12345,1,READ,SELECT,public.employees,,,SELECT * FROM employees WHERE salary > 100000
-```
-
-**Extraction**:
-```kql
-| extend 
-    Operation = extract(@"AUDIT: SESSION,\d+,\d+,([A-Z]+),", 1, message),      // READ, WRITE, DDL
-    Statement = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,([A-Z ]+),", 1, message), // SELECT, INSERT, etc.
-    Table = extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message),
-    QueryText = trim('"', extract(@",,,([^<]+)<", 1, message))
-```
-
-**⚠️ CRITICAL**: AUDIT logs DO NOT contain user/database/host. You MUST join with CONNECTION logs.
-
-### 2.3 ERROR Logs
-**Key Error Codes**:
-| Code | Category | Meaning | Security Impact |
-|------|----------|---------|-----------------|
-| 28P01 | Auth | Password failed | Brute force attack |
-| 42501 | Permission | Insufficient privilege | Unauthorized access attempt |
-| 53300 | Resource | Too many connections | DoS or pool exhaustion |
-| 08006 | Connection | Connection failure | Network issue |
-
-**Extraction**:
-```kql
-| where errorLevel in ("ERROR", "FATAL", "PANIC") or sqlerrcode != "00000"
-```
-
----
-
-## 3. SESSION CORRELATION PATTERN (MANDATORY)
-
-**Problem**: AUDIT logs have processId but NOT user/database/host.
-
-**Solution**: Build sessionInfo lookup from CONNECTION logs:
-
-```kql
-// STEP 1: Create sessionInfo (inline or as let)
 let sessionInfo = 
 bronze_pssql_alllogs_nometrics
-| where EventProcessedUtcTime >= ago(24h)  // Wide window (connections are long-lived)
+| where EventProcessedUtcTime >= ago(24h)
 | where message contains "connection authorized"
 | extend 
     UserName = extract(@"user=([^\s,]+)", 1, message),
     DatabaseName = extract(@"database=([^\s,]+)", 1, message),
     ClientHost = extract(@"host=([^\s]+)", 1, message)
-| where isnotempty(UserName)
 | summarize User = any(UserName), Database = any(DatabaseName), SourceHost = any(ClientHost)
     by processId, LogicalServerName;
 
-// STEP 2: Join AUDIT logs with sessionInfo
+// Then join AUDIT logs
 bronze_pssql_alllogs_nometrics
-| where EventProcessedUtcTime >= ago(5m)
-| where message contains "AUDIT:"
 | join kind=leftouter sessionInfo on processId, LogicalServerName
-| extend 
-    FinalUser = iff(isnotempty(User), User, "UNKNOWN"),
-    FinalDatabase = iff(isnotempty(Database), Database, "UNKNOWN")
 ```
 
-**Why leftouter?** Some AUDIT logs may not have matching CONNECTION logs (connection outside time window).
+**Why?** AUDIT logs contain query details but NOT user/database/host. CONNECTION logs provide context but lack queries.
 
-**Why ago(24h) for sessionInfo?** PostgreSQL sessions can be long-lived (hours/days). Use wider window than analysis window.
+**Extract Patterns**:
+- User: `extract(@"user=([^\s,]+)", 1, message)`
+- Database: `extract(@"database=([^\s,]+)", 1, message)`
+- Host: `extract(@"host=([^\s]+)", 1, message)`
+- Query: `trim('"', extract(@",,,([^<]+)<", 1, message))`
 
----
+**⚠️ KQL Rules** (causes errors):
+- ❌ `arg_max()` or `any()` → Use `take_any()` instead
+- ❌ `extract(..., typeof(string))` → Use `extract(@"pattern", 1, message)` only
+- ✅ Filter time FIRST: `| where EventProcessedUtcTime >= ago(24h)`
 
-## 4. FILTERING RULES
+### 3. Common Queries
 
-### 4.1 Time Filtering (MANDATORY for performance)
-**Always filter by EventProcessedUtcTime FIRST**:
-
+**Brute Force (Failed Auth)**:
 ```kql
-// ✅ CORRECT
 bronze_pssql_alllogs_nometrics
-| where EventProcessedUtcTime >= ago(24h)  // Filter first
-| where message contains "AUDIT:"
-
-// ❌ WRONG (scans entire table)
-bronze_pssql_alllogs_nometrics
-| where message contains "AUDIT:"
+| where EventProcessedUtcTime >= ago(24h)
+| where (tostring(sqlerrcode) startswith "28" and tostring(sqlerrcode) != "28000")
+      or (tostring(sqlerrcode) == "28000" and tolower(errorLevel) in ("error", "fatal"))
+      or (tolower(errorLevel) in ("error", "fatal") and message contains "authentication")
+| extend ClientHost = extract(@"host=([^\s]+)", 1, message)
+| summarize FailedAttempts = count(), ErrorCodes = make_set(tostring(sqlerrcode)) by ClientHost = coalesce(ClientHost, "UNKNOWN"), LogicalServerName
+| extend Severity = case(
+    FailedAttempts > 20, "🔴 CRITICAL",
+    FailedAttempts > 10, "🟠 HIGH",
+    FailedAttempts > 5, "🟡 MEDIUM",
+    "ℹ️ LOW"
+)
+| order by FailedAttempts desc
 ```
+Detects PostgreSQL auth errors (28xxx codes). Error code 28000 with ERROR/FATAL level = failed authentication.
 
-**Recommended windows**:
-- Real-time alerts: ago(5m) to ago(1h)
-- Investigations: ago(24h)
-- ML training: ago(7d) to ago(30d)
-
-### 4.2 Backend Type Filtering
-**Exclude internal processes** for user activity analysis:
-
-```kql
-| where backend_type == "client backend"  // Only real user connections
-```
-
-**Exclude values**: autovacuum worker, walwriter, checkpointer, background writer, logical replication launcher
-
-### 4.3 Noise Reduction
-```kql
-| where FinalUser != "azuresu"  // Exclude Azure monitoring user
-| where SchemaName !in ("pg_catalog", "information_schema")  // Exclude system schemas
-```
-
----
-
-## 5. COMMON QUERY PATTERNS
-
-### 5.1 Failed Logins (Brute Force Detection)
+**Data Exfiltration (Excessive SELECT)**:
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(1h)
-| where message contains "authentication failed" or sqlerrcode == "28P01"
-| extend 
-    UserName = extract(@"user=([^\s,]+)", 1, message),
-    ClientHost = extract(@"host=([^\s]+)", 1, message)
-| summarize FailedAttempts = count() by ClientHost, UserName
-| where FailedAttempts > 5
-| order by FailedAttempts desc
+| where message contains "AUDIT:" and message has_any ("SELECT", "COPY")
+| extend UserName = extract(@"user=([^\s,]+)", 1, message)
+| summarize SelectCount = count() by UserName
+| where SelectCount > 15
 ```
+Threshold: >15 in 1 hour = CRITICAL
 
-### 5.2 Data Exfiltration (Excessive SELECTs)
+**Privilege Operations** (GRANT/REVOKE):
 ```kql
-let sessionInfo = [see Section 3];
-
 bronze_pssql_alllogs_nometrics
-| where EventProcessedUtcTime >= ago(5m)
-| where message contains "AUDIT:"
-| where message has_any ("SELECT", "COPY")
-| where backend_type == "client backend"
-| join kind=leftouter sessionInfo on processId, LogicalServerName
-| summarize SelectCount = count() by processId, User, SourceHost
-| where SelectCount > 15  // Threshold: 15 SELECTs in 5 min
-| order by SelectCount desc
+| where EventProcessedUtcTime >= ago(24h)
+| where message has_any ("GRANT", "REVOKE", "ALTER ROLE", "CREATE ROLE")
+| extend UserName = extract(@"user=([^\s,]+)", 1, message)
+| summarize Operations = count() by UserName, LogicalServerName
+| where Operations > 0
 ```
+Threshold: >0 = CRITICAL (any privilege op)
 
-### 5.3 Privilege Escalation
+**Error Spike**:
 ```kql
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(10m)
-| where message has_any ("GRANT", "REVOKE", "ALTER ROLE", "CREATE ROLE")
-| extend UserName = extract(@"user=([^\s,]+)", 1, message)
-| summarize PrivOpsCount = count() by UserName, LogicalServerName, bin(EventProcessedUtcTime, 5m)
-| where PrivOpsCount > 3
+| where errorLevel in ("ERROR", "FATAL", "PANIC")
+| summarize ErrorCount = count() by bin(EventProcessedUtcTime, 1m)
+| where ErrorCount > 15
 ```
+Threshold: >15/min = CRITICAL
 
----
-
-## 6. ML ANOMALY DETECTION PATTERNS
-
-### 6.1 Time Series Anomaly (Activity Baseline)
+**ML Anomaly Detection**:
 ```kql
 postgres_activity_metrics
 | where Timestamp >= ago(7d)
@@ -272,168 +148,313 @@ postgres_activity_metrics
 | extend (anomalies, score, baseline) = series_decompose_anomalies(ActivitySeries, 1.5, -1, 'linefit')
 | mv-expand Timestamp to typeof(datetime), ActivitySeries to typeof(long), anomalies to typeof(int), score to typeof(double), baseline to typeof(double)
 | where anomalies != 0
-| where Timestamp >= ago(1h)
-| extend 
-    Direction = iff(anomalies > 0, "📈 Above Normal", "📉 Below Normal"),
-    Severity = case(abs(score) > 3.0, "CRITICAL", abs(score) > 2.0, "HIGH", "MEDIUM")
-| project Timestamp, ServerName, ActivityCount = ActivitySeries, Baseline = baseline, Score = score, Direction, Severity
+```
+Returns: `anomalies = 1` (spike), `anomalies = -1` (drop), `score` (deviation magnitude)
+
+### 4. Filtering & Optimization
+
+**Always filter by time FIRST** for query performance:
+```kql
+| where EventProcessedUtcTime >= ago(24h)  // 1h for real-time, 24h for investigations, 7d+ for ML training
 ```
 
-**Interpretation**:
-- `anomalies = 1`: Unexpected spike
-- `anomalies = -1`: Unexpected drop
-- `score`: Deviation magnitude (higher = more anomalous)
-- `baseline`: Expected value based on learned pattern
-- **Sensitivity**: 1.5 (adjust to 1.0 for more alerts, 2.0 for fewer)
-
-### 6.2 Privilege Escalation Alerts (Temporal)
+**Exclude internal processes**:
 ```kql
-postgres_activity_metrics
-| where Timestamp >= ago(24h)
-| where PrivilegeOps > 0
-| extend 
-    TimeRisk = iff(HourOfDay < 9 or HourOfDay > 17, "🔴 Off-Hours", "🟡 Business Hours"),
-    WeekendRisk = iff(DayOfWeek in (0, 6), "🔴 Weekend", "✅ Weekday")
-| project Timestamp, ServerName, PrivilegeOps, HourOfDay, DayOfWeek, TimeRisk, WeekendRisk
+| where backend_type == "client backend"  // Only user connections
+| where FinalUser != "azuresu"  // Exclude Azure system user
 ```
 
-**Alert Logic**: ANY PrivilegeOps > 0 is suspicious. Off-Hours + Weekend = CRITICAL.
+**Error Code Reference**:
+- 28000 = Invalid authorization (auth failed when ERROR/FATAL level)
+- 28P01 = Invalid password (specific subcode of 28000)
+- 42501 = Permission denied (unauthorized access)
+- 42P01 = Undefined table (table not found)
+- 53300 = Too many connections (DoS/pool exhaustion)
+- 08006 = Connection lost (network issue)
+- 57P03 = Cannot connect now (server shutting down)
+- 58P01 = Undefined file (internal error)
 
-### 6.3 User Behavioral Baseline
+### 5. Message Formats
+
+**CONNECTION**: `"connection authorized: user=USERNAME database=DBNAME host=IP ..."`
+Extract via: `extract(@"user=([^\s,]+)", 1, message)`
+
+**AUDIT**: `"AUDIT: SESSION,<pid>,<seq>,<operation>,<statement>,<object>,,,<query>"`
+Operations: READ (SELECT/COPY), WRITE (INSERT/UPDATE/DELETE), DDL, MISC
+
+**ERROR**: `errorLevel="ERROR"` + `sqlerrcode` + message context
+Levels: LOG < WARNING < ERROR < FATAL < PANIC
+
+### 6. Data Limitations
+
+- **No AUDIT logs?** Enable pgaudit: `shared_preload_libraries = 'pgaudit'` + restart
+- **User always UNKNOWN?** Enable `log_connections = on` OR widen sessionInfo window to ago(7d)
+- **Latency**: EventProcessedUtcTime is 1-5sec behind actual event
+- **processId reuse**: PostgreSQL reuses after connection close - correlate within same time window
+- **Query truncation**: Very long queries may be split across multiple log entries
+- **Authentication errors use error codes**: PostgreSQL logs auth failures as code 28xxx (28000, 28P01, etc.), NOT as text "authentication failed"
+- **Diagnostic query** to see all error types:
+  ```kql
+  bronze_pssql_alllogs_nometrics
+  | where EventProcessedUtcTime >= ago(24h)
+  | where sqlerrcode != "00000" and sqlerrcode != ""
+  | summarize count(), sample_msg = any(message) by sqlerrcode, errorLevel
+  | order by count_ desc
+  ```
+
+### 7. Response Format
+
+Format all responses as:
+```
+🔴 CRITICAL / 🟠 HIGH / 🟡 MEDIUM / ✅ NORMAL
+
+[Metric & Finding]
+Query searched: [Time window, threshold, conditions]
+
+Recommendation: [Action]
+```
+
+Example: "🔴 CRITICAL: 42 failed auth attempts from 192.168.1.100 (>5 threshold) in last 24h. Recommend: Block IP via NSG | Enable MFA | Review logs"
+
+### 8. Example Questions Agent Can Answer
+
+✅ "Show failed logins in last hour" → Brute force detection
+✅ "Which users run most SELECT queries today?" → Activity analysis
+✅ "Detect ML anomalies this week" → series_decompose_anomalies
+✅ "Show privilege escalations" → GRANT/REVOKE activity
+✅ "What error codes are most common?" → Error trend analysis
+✅ "Find users accessing 5+ schemas" → Reconnaissance detection
+✅ "Show off-hours DDL changes" → Compliance audit
+✅ "Detect data exfiltration patterns" → Excessive SELECTs
+✅ "Compare current activity vs baseline" → Anomaly score
+✅ "Show weekend suspicious activity" → Temporal pattern analysis
+
+---
+
+## 📊 Data Source Example Queries
+
+### Example 1: Brute Force Attack Detection (Last 24 Hours)
+
+**User Question**: "Show me any brute force attacks from the last 24 hours"
+
+**Reasoning**: Identifies authentication failures using PostgreSQL error codes (28xxx = authentication errors)
+
+**Query**:
 ```kql
-postgres_user_metrics
-| where Timestamp >= ago(7d)
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where (tostring(sqlerrcode) startswith "28" and tostring(sqlerrcode) != "28000")  // 28xxx auth errors except 28000
+      or (tostring(sqlerrcode) == "28000" and tolower(errorLevel) in ("error", "fatal"))  // 28000 with ERROR/FATAL = failed auth
+      or (tolower(errorLevel) in ("error", "fatal") and message contains "authentication")
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    ClientHost = extract(@"host=([^\s]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    ErrorCode = tostring(sqlerrcode)
 | summarize 
-    AvgDailyQueries = avg(QueryCount),
-    MaxDestructiveOps = max(DestructiveOps),
-    DestructiveRatio = round(avg(DestructiveOps) * 100.0 / avg(QueryCount), 2)
-    by UserName, ServerName
-| extend RiskLevel = case(
-    MaxDestructiveOps > 50, "🔴 High",
-    DestructiveRatio > 20, "🟠 Medium",
-    "✅ Normal"
+    FailedAttempts = count(),
+    FirstAttempt = min(EventProcessedUtcTime),
+    LastAttempt = max(EventProcessedUtcTime),
+    Users = make_set(UserName, 10),
+    Databases = make_set(DatabaseName, 5),
+    ErrorCodes = make_set(ErrorCode, 5),
+    SampleMessages = make_set(message, 2)
+    by ClientHost = coalesce(ClientHost, "UNKNOWN"), LogicalServerName
+| extend Severity = case(
+    FailedAttempts > 20, "🔴 CRITICAL",
+    FailedAttempts > 10, "🟠 HIGH",
+    FailedAttempts > 5, "🟡 MEDIUM",
+    "ℹ️ LOW"
 )
-| where RiskLevel != "✅ Normal"
-| order by MaxDestructiveOps desc
+| order by FailedAttempts desc
+| project 
+    ClientHost, 
+    ServerName = LogicalServerName,
+    FailedAttempts, 
+    Severity, 
+    Users = strcat_array(Users, ", "), 
+    Databases = strcat_array(Databases, ", "),
+    ErrorCodes = strcat_array(ErrorCodes, ", "),
+    FirstAttempt, 
+    LastAttempt,
+    SampleMessages
+```
+
+**Expected Response**: Table showing IP addresses with authentication failures. If no results, respond: "✅ No authentication failures detected in the last 24 hours (0 errors with code 28xxx)."
+
+**Troubleshooting**: Check what auth-related errors exist:
+```kql
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where tostring(sqlerrcode) startswith "28"
+| summarize count() by sqlerrcode = tostring(sqlerrcode), errorLevel = toupper(errorLevel), sample_message = any(message)
+| order by count_ desc
 ```
 
 ---
 
-## 7. DATA QUALITY & LIMITATIONS
+### Example 2: Data Exfiltration Detection (Current Hour)
 
-### 7.1 Known Issues
-1. **AUDIT logs require pgaudit**: If no "AUDIT:" messages, extension not enabled
-2. **processId reuse**: PostgreSQL reuses IDs after connections close. Always correlate within same time window
-3. **Message truncation**: Very long queries may be split across multiple log entries
-4. **Lag**: EventProcessedUtcTime is 1-5 sec after TimeGenerated
+**User Question**: "Who is exfiltrating data right now?"
 
-### 7.2 Data Freshness
-- **Raw logs**: 1-5 second latency (real-time)
-- **postgres_activity_metrics**: Updated every 5 minutes
-- **postgres_error_metrics**: Updated every 1 minute
-- **postgres_user_metrics**: Updated every 1 hour
+**Reasoning**: Finds users running excessive SELECT queries (potential data theft)
 
-**Verify freshness**:
+**Query**:
 ```kql
-bronze_pssql_alllogs_nometrics
-| summarize LatestLog = max(EventProcessedUtcTime)
-| extend Lag = now() - LatestLog, Status = iff(Lag > 5m, "🔴 Delayed", "✅ Real-time")
-```
-
----
-
-## 8. PERFORMANCE OPTIMIZATION
-
-### 8.1 Query Optimization Rules
-1. **Filter early**: Apply time/server filters BEFORE joins
-2. **Limit sessionInfo window**: Use smallest window that captures connections
-3. **Use `take` for exploration**: `| take 100` for quick tests
-4. **Aggregate before join**: Reduce data volume before expensive joins
-
-**Example**:
-```kql
-// ✅ OPTIMIZED
-bronze_pssql_alllogs_nometrics
-| where EventProcessedUtcTime >= ago(1h)  // Filter first
-| where backend_type == "client backend"
-| summarize Count = count() by processId  // Aggregate
-| join kind=inner sessionInfo on processId
-
-// ❌ SLOW
-bronze_pssql_alllogs_nometrics
-| join kind=inner sessionInfo on processId  // Join entire table
-| where EventProcessedUtcTime >= ago(1h)
-```
-
-### 8.2 Indexing
-- `EventProcessedUtcTime`: Automatically indexed (use for time filters)
-- `LogicalServerName`: Indexed (use for server-specific queries)
-- `processId`: Not indexed (join performance depends on sessionInfo size)
-
----
-
-## 9. SECURITY & COMPLIANCE
-
-### 9.1 Data Sensitivity
-- **PII/PHI**: Query text may contain SSNs, medical records, etc.
-- **Best Practice**: Use `project-away QueryText` when sharing results
-- **Redaction**: `| extend QueryText = replace_regex(QueryText, @"\d{3}-\d{2}-\d{4}", "XXX-XX-XXXX")`
-
-### 9.2 Audit Trail
-- **Retention**: Configurable (default 90 days)
-- **Immutability**: Cannot modify/delete logs
-- **Compliance**: Suitable for SOC 2, HIPAA, PCI-DSS
-
----
-
-## 10. TROUBLESHOOTING
-
-### 10.1 No AUDIT logs
-**Check**:
-```kql
-bronze_pssql_alllogs_nometrics
-| where EventProcessedUtcTime >= ago(1h)
-| summarize Count = count() by HasAudit = message contains "AUDIT:"
-```
-**Fix**: Enable pgaudit extension + `shared_preload_libraries = 'pgaudit'` + restart server
-
-### 10.2 User/Database always "UNKNOWN"
-**Check**:
-```kql
+let sessionInfo = 
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(1h)
 | where message contains "connection authorized"
-| take 10
-```
-**Fix**: Enable `log_connections = on` in Server Parameters OR widen sessionInfo window to ago(7d)
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message),
+    ClientHost = extract(@"host=([^\s]+)", 1, message)
+| summarize User = any(UserName), Database = any(DatabaseName), SourceHost = any(ClientHost)
+    by processId, LogicalServerName;
 
-### 10.3 ML not detecting anomalies
-**Check**:
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(1h)
+| where message contains "AUDIT:" and message has_any ("SELECT", "COPY")
+| where backend_type == "client backend"
+| join kind=leftouter sessionInfo on processId, LogicalServerName
+| summarize 
+    SelectCount = count(),
+    LastQuery = max(EventProcessedUtcTime),
+    TablesAccessed = dcount(extract(@"AUDIT: SESSION,\d+,\d+,[A-Z]+,[A-Z ]+,([^,]*),", 1, message))
+    by User, Database, SourceHost, processId
+| where SelectCount > 15
+| extend Severity = case(SelectCount > 50, "🔴 CRITICAL", SelectCount > 30, "🟠 HIGH", "🟡 MEDIUM")
+| order by SelectCount desc
+| project User, Database, SourceHost, SelectCount, TablesAccessed, Severity, LastQuery
+```
+
+**Expected Response**: Table of users executing suspicious numbers of SELECT queries, grouped by user/database.
+
+---
+
+### Example 3: Privilege Escalation Monitoring (Last 7 Days)
+
+**User Question**: "Have there been any privilege escalation attempts this week?"
+
+**Reasoning**: Detects GRANT/REVOKE/CREATE ROLE operations (especially off-hours)
+
+**Query**:
 ```kql
 postgres_activity_metrics
-| summarize MinTime = min(Timestamp), MaxTime = max(Timestamp), Records = count()
+| where Timestamp >= ago(7d)
+| where PrivilegeOps > 0
+| extend 
+    TimeContext = case(
+        HourOfDay < 6 or HourOfDay > 22, "🔴 Midnight",
+        HourOfDay < 9 or HourOfDay > 17, "🟡 Off-Hours",
+        "✅ Business Hours"
+    ),
+    DayContext = case(
+        DayOfWeek in (0, 6), "🔴 Weekend",
+        "✅ Weekday"
+    ),
+    Severity = case(
+        (HourOfDay < 6 or HourOfDay > 22) and DayOfWeek in (0, 6), "🔴 CRITICAL",
+        HourOfDay < 9 or HourOfDay > 17, "🟠 HIGH",
+        "🟡 MEDIUM"
+    )
+| where PrivilegeOps > 0
+| project Timestamp, ServerName, PrivilegeOps, HourOfDay, DayOfWeek, TimeContext, DayContext, Severity, ActivityCount
+| order by Timestamp desc
 ```
-**Fix**: Ensure 7+ days of data exists + adjust sensitivity from 1.5 to 1.0 for more sensitive detection
+
+**Expected Response**: Timeline of privilege operations with risk context (off-hours/weekend = higher severity).
 
 ---
 
-## 11. EXAMPLE QUESTIONS THE AGENT CAN ANSWER
+### Example 4: Error Spike Analysis (Last 2 Hours)
 
-✅ "Show me failed login attempts in the last hour"
-✅ "Which users are performing the most SELECT queries today?"
-✅ "Detect anomalous activity patterns using ML"
-✅ "Show privilege escalation attempts this week"
-✅ "What are the top error codes in the last 24 hours?"
-✅ "Find users accessing more than 5 different schemas"
-✅ "Show off-hours DDL operations (schema changes)"
-✅ "Detect data exfiltration patterns (excessive SELECTs)"
-✅ "Compare current error rate vs baseline"
-✅ "Show weekend activity that deviates from normal"
+**User Question**: "Show me error spikes in the last 2 hours"
+
+**Reasoning**: Detects sudden increases in ERROR/FATAL/PANIC logs indicating system issues or attacks
+
+**Query**:
+```kql
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(2h)
+| where errorLevel in ("ERROR", "FATAL", "PANIC")
+| extend 
+    ErrorCategory = case(
+        message contains "authentication", "🔐 Auth Error",
+        message contains "permission denied", "🚫 Permission Error",
+        message contains "connection", "🔌 Connection Error",
+        sqlerrcode startswith "28", "🔐 Auth Error",
+        sqlerrcode startswith "42", "🚫 Permission Error",
+        sqlerrcode startswith "53", "⚠️ Resource Error",
+        "❓ Other Error"
+    ),
+    LogicalServerName = LogicalServerName
+| summarize 
+    ErrorCount = count(),
+    UniqueErrorTypes = dcount(ErrorCategory),
+    ErrorTypes = make_set(ErrorCategory, 5),
+    FirstError = min(EventProcessedUtcTime),
+    LastError = max(EventProcessedUtcTime),
+    SampleMessages = make_set(message, 3)
+    by bin(EventProcessedUtcTime, 5m), LogicalServerName
+| where ErrorCount > 10
+| extend Severity = case(ErrorCount > 50, "🔴 CRITICAL", ErrorCount > 25, "🟠 HIGH", "🟡 MEDIUM")
+| order by EventProcessedUtcTime desc
+| project TimeWindow = EventProcessedUtcTime, ServerName = LogicalServerName, ErrorCount, Severity, ErrorTypes = strcat_array(ErrorTypes, "; "), UniqueErrorTypes
+```
+
+**Expected Response**: Timeline of error spikes with error categories, allowing quick diagnosis.
 
 ---
 
-**END OF INSTRUCTIONS**
+### Example 5: ML-Based Anomaly Detection (Last 7 Days)
+
+**User Question**: "Detect anomalies in database activity patterns using ML"
+
+**Reasoning**: Uses time series decomposition to identify unusual activity compared to baseline
+
+**Query**:
+```kql
+postgres_activity_metrics
+| where Timestamp >= ago(7d)
+| make-series ActivitySeries = sum(ActivityCount) default=0 on Timestamp step 5m by ServerName
+| extend (anomalies, score, baseline) = series_decompose_anomalies(ActivitySeries, 1.5, -1, 'linefit')
+| mv-expand Timestamp to typeof(datetime), ActivitySeries to typeof(long), anomalies to typeof(int), score to typeof(double), baseline to typeof(double)
+| where anomalies != 0 and Timestamp >= ago(24h)
+| extend 
+    Direction = iff(anomalies > 0, "📈 Activity Spike", "📉 Activity Drop"),
+    Severity = case(
+        abs(score) > 3.5, "🔴 CRITICAL",
+        abs(score) > 2.5, "🟠 HIGH",
+        abs(score) > 1.5, "🟡 MEDIUM",
+        "ℹ️ LOW"
+    ),
+    DeviationPercent = round(abs(ActivitySeries - baseline) * 100 / baseline, 1)
+| order by abs(score) desc
+| project 
+    Timestamp, 
+    ServerName, 
+    Activity = ActivitySeries, 
+    Baseline = round(baseline, 0), 
+    DeviationPercent, 
+    Direction, 
+    Severity, 
+    AnomalyScore = round(score, 2)
+| take 20
 ```
 
-**Character count: 13,967/15,000** ✅
+**Expected Response**: Time series of anomalies with baseline comparison, helping identify unusual patterns.
+
+---
+
+## ⚙️ Configuration Summary
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| Data Source Description | Top of document | ✅ 747/800 chars |
+| Data Source Instructions | Sections 1-7 | ✅ 13,850/15,000 chars |
+| Example Queries | Section 8 (this section) | ✅ 5 queries provided |
+| Agent Instructions | docs/DATA-AGENT-INSTRUCTIONS.md | ✅ ~14.5K chars |
+| KQL Queries | UNIFIED-ANOMALY-DETECTION.kql | ✅ Full anomaly suite |
+
 

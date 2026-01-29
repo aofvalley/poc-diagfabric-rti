@@ -16,22 +16,22 @@
 .create table postgres_activity_metrics (
     Timestamp: datetime,
     ServerName: string,
-    HourOfDay: int,              // 0-23 para patrones horarios
-    DayOfWeek: int,              // 0=Dom, 1=Lun, ..., 6=Sab
+    HourOfDay: int,              // 0-23 for hourly patterns
+    DayOfWeek: int,              // 0=Sun, 1=Mon, ..., 6=Sat
     ActivityCount: long,
     AuditLogs: long,
     Errors: long,
     Connections: long,
-    UniqueUsers: long,           // Usuarios distintos activos
-    SelectOps: long,             // Operaciones de lectura
+    UniqueUsers: long,           // Distinct active users
+    SelectOps: long,             // Read operations
     WriteOps: long,              // INSERT/UPDATE/DELETE
     DDLOps: long,                // CREATE/DROP/ALTER
-    PrivilegeOps: long           // GRANT/REVOKE (alertas de escalada)
+    PrivilegeOps: long           // GRANT/REVOKE (escalation alerts)
 )
 
 
 // ----------------------------------------------------------------------------
-// 1.2 Función de Transformación para Métricas de Actividad
+// 1.2 Activity Metrics Transformation Function
 // ----------------------------------------------------------------------------
 
 .create-or-alter function postgres_activity_metrics_transform() {
@@ -62,7 +62,7 @@
 
 
 // ----------------------------------------------------------------------------
-// 1.3 Update Policy para Actualización Automática
+// 1.3 Update Policy for Automatic Updates
 // ----------------------------------------------------------------------------
 
 .alter table postgres_activity_metrics policy update 
@@ -70,7 +70,7 @@
 
 
 // ----------------------------------------------------------------------------
-// 1.4 Carga Inicial de Datos Históricos (30 días para ML baseline)
+// 1.4 Initial Historical Data Load (30 days for ML baseline)
 // ----------------------------------------------------------------------------
 
 .set-or-append postgres_activity_metrics <|
@@ -101,7 +101,7 @@
 
 
 // ----------------------------------------------------------------------------
-// 1.5 Tabla de Métricas de Errores
+// 1.5 Error Metrics Table
 // ----------------------------------------------------------------------------
 
 .create table postgres_error_metrics (
@@ -153,7 +153,7 @@
 
 
 // ----------------------------------------------------------------------------
-// 1.6 Tabla de Métricas por Usuario
+// 1.6 User Metrics Table
 // ----------------------------------------------------------------------------
 
 .create table postgres_user_metrics (
@@ -202,11 +202,11 @@
 
 
 // ============================================================================
-// SECCIÓN 2: QUERIES DE ANOMALÍAS EN TIEMPO REAL
+// SECTION 2: REAL-TIME ANOMALY QUERIES
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// 2.1 ANOMALÍA: Extracción Masiva de Datos (Data Exfiltration)
+// 2.1 ANOMALY: Mass Data Exfiltration
 // ----------------------------------------------------------------------------
 
 let suspiciousDataAccess = 
@@ -438,20 +438,22 @@ errorSpike
 // ----------------------------------------------------------------------------
 // Privilege Escalation
 // ----------------------------------------------------------------------------
-// IMPORTANT NOTE: Azure PostgreSQL does NOT generate AUDIT logs for GRANT/REVOKE.
+// IMPORTANT NOTE: Azure PostgreSQL does NOT generate AUDIT logs for GRANT/REVOKE by default.
 // This query detects privilege modification attempts based on:
+// - AUDIT logs if pgaudit is configured with "ROLE" class
 // - WARNING/ERROR messages when there are issues with roles/grants
 // - Any log mentioning privilege operations
-// The threshold is low (>1) because we only capture errors/warnings.
+// The threshold is 0 (any occurrence) because these are critical security events.
 // ----------------------------------------------------------------------------
 
 let privilegeEscalation = 
 bronze_pssql_alllogs_nometrics
-| where EventProcessedUtcTime >= ago(15m)
+| where EventProcessedUtcTime >= ago(24h)
 | where category == "PostgreSQLLogs"
-// Search in ANY message type (including WARNING, ERROR)
-| where message has_any ("GRANT", "REVOKE", "ALTER ROLE", "CREATE ROLE", "DROP ROLE", "anomaly_test")
-// Include warnings and errors that mention roles
+// Search in ALL message types (AUDIT, LOG, WARNING, ERROR)
+| where message has_any ("GRANT", "REVOKE", "ALTER ROLE", "CREATE ROLE", "DROP ROLE")
+// Exclude internal Azure operations
+| where message !contains "azure_maintenance" and message !contains "azuresu"
 | where backend_type == "client backend" or isempty(backend_type)
 | extend 
     PrivilegeOp = case(
@@ -475,7 +477,7 @@ bronze_pssql_alllogs_nometrics
 ) on processId, LogicalServerName
 | extend FinalUser = iff(isnotempty(DirectUser), DirectUser, iff(isnotempty(User), User, "UNKNOWN"))
 // Filter out Azure system users
-| where FinalUser !in ("azuresu", "azure_maintenance")
+| where FinalUser !in ("azuresu", "azure_maintenance", "UNKNOWN")
 | summarize 
     PrivilegeOpsCount = count(),
     Operations = make_set(PrivilegeOp),
@@ -484,9 +486,9 @@ bronze_pssql_alllogs_nometrics
     LastOp = max(EventProcessedUtcTime),
     SampleQueries = make_set(QueryText, 3),
     User = any(FinalUser)
-    by LogicalServerName, bin(EventProcessedUtcTime, 5m)
-// Low threshold because we only capture warnings/errors
-| where PrivilegeOpsCount > 1
+    by LogicalServerName, bin(EventProcessedUtcTime, 1h)
+// ANY privilege operation is critical (threshold = 0)
+| where PrivilegeOpsCount > 0
 | extend 
     AnomalyType = "Privilege Escalation",
     Severity = case(
@@ -646,7 +648,52 @@ deepSchemaEnum
 
 
 // ----------------------------------------------------------------------------
-// 2.7 ANOMALÍA: ML Anomaly Detection - Desviación de Baseline
+// 2.7 ANOMALY: Brute Force Authentication Attempts
+// ----------------------------------------------------------------------------
+
+let bruteForceScan = 
+bronze_pssql_alllogs_nometrics
+| where EventProcessedUtcTime >= ago(24h)
+| where category == "PostgreSQLLogs"
+| where message contains "authentication failed" 
+    or message contains "password authentication failed"
+    or sqlerrcode == "28P01"
+| extend 
+    UserName = extract(@"user=([^\s,]+)", 1, message),
+    ClientHost = extract(@"host=([^\s]+)", 1, message),
+    DatabaseName = extract(@"database=([^\s,]+)", 1, message)
+| where isnotempty(ClientHost) or isnotempty(UserName)
+| summarize 
+    FailedAttempts = count(),
+    FirstAttempt = min(EventProcessedUtcTime),
+    LastAttempt = max(EventProcessedUtcTime),
+    Users = make_set(UserName, 10),
+    Databases = make_set(DatabaseName, 5)
+    by ClientHost
+| where FailedAttempts > 5
+| extend 
+    AnomalyType = "Brute Force Authentication",
+    Severity = case(
+        FailedAttempts > 20, "CRITICAL",
+        FailedAttempts > 10, "HIGH",
+        "MEDIUM"
+    )
+| project 
+    TimeGenerated = LastAttempt,
+    AnomalyType,
+    Severity,
+    ServerName = "Multiple",
+    SourceHost = ClientHost,
+    FailedAttempts,
+    Users = strcat_array(Users, ", "),
+    Databases = strcat_array(Databases, ", "),
+    TimeWindow = strcat(format_datetime(FirstAttempt, 'HH:mm:ss'), " - ", format_datetime(LastAttempt, 'HH:mm:ss'));
+
+bruteForceScan
+
+
+// ----------------------------------------------------------------------------
+// 2.8 ANOMALY: ML Anomaly Detection - Baseline Deviation
 // ----------------------------------------------------------------------------
 
 let mlAnomalyDetection = 
@@ -689,7 +736,7 @@ mlAnomalyDetection
 
 
 // ============================================================================
-// SECCIÓN 3: DASHBOARD PRINCIPAL - TODAS LAS ANOMALÍAS
+// SECTION 3: MAIN DASHBOARD - ALL ANOMALIES
 // ============================================================================
 
 union
@@ -698,17 +745,18 @@ union
     (errorSpike),
     (privilegeEscalation),
     (crossSchemaRecon),
-    (deepSchemaEnum)
+    (deepSchemaEnum),
+    (bruteForceScan)
 | order by TimeGenerated desc
 | take 100;
 
 
 // ============================================================================
-// SECCIÓN 4: DASHBOARDS DE MÉTRICAS OPERACIONALES
+// SECTION 4: OPERATIONAL METRICS DASHBOARDS
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// 4.1 Actividad General por Servidor (última hora)
+// 4.1 General Activity by Server (last hour)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -724,7 +772,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 4.2 Distribución de Tipos de Operaciones AUDIT (últimas 6h)
+// 4.2 Distribution of AUDIT Operation Types (last 6h)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -739,7 +787,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 4.3 Top 15 Tablas Más Accedidas
+// 4.3 Top 15 Most Accessed Tables
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -760,7 +808,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 4.4 Timeline de Operaciones AUDIT por Tipo (última hora)
+// 4.4 Timeline of AUDIT Operations by Type (last hour)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -780,7 +828,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 4.5 Errores por Categoría (últimas 24h)
+// 4.5 Errors by Category (last 24h)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -801,7 +849,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 4.6 Actividad por Backend Type (última hora)
+// 4.6 Activity by Backend Type (last hour)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -815,7 +863,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 4.7 TOP 10 USUARIOS por Actividad (últimas 24h)
+// 4.7 TOP 10 USERS by Activity (last 24h)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -835,7 +883,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 4.8 TOP 10 HOSTS/IPs por Conexiones (últimas 24h)
+// 4.8 TOP 10 HOSTS/IPs by Connections (last 24h)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -855,17 +903,17 @@ bronze_pssql_alllogs_nometrics
 | extend 
     UsersDisplay = strcat_array(Users, ", "),
     ErrorRate = round((todouble(Errors) / TotalConnections) * 100, 2),
-    Riesgo = case(
+    Risk = case(
         round((todouble(Errors) / TotalConnections) * 100, 2) > 20, "HIGH",
         round((todouble(Errors) / TotalConnections) * 100, 2) > 5, "MEDIUM",
         "LOW"
     )
 | top 10 by TotalConnections desc
-| project ClientHost, TotalConnections, UniqueUsers, UsersDisplay, Errors, ErrorRate, Riesgo, FirstSeen, LastSeen;
+| project ClientHost, TotalConnections, UniqueUsers, UsersDisplay, Errors, ErrorRate, Risk, FirstSeen, LastSeen;
 
 
 // ----------------------------------------------------------------------------
-// 4.9 Heat Map User + Database (últimas 24h)
+// 4.9 Heat Map User + Database (last 24h)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -887,7 +935,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 4.10 Fallos de Autenticación por Usuario/Host (últimas 24h)
+// 4.10 Authentication Failures by User/Host (last 24h)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -918,7 +966,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 4.11 Top Códigos de Error (últimas 24h)
+// 4.11 Top Error Codes (last 24h)
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -943,19 +991,19 @@ bronze_pssql_alllogs_nometrics
 
 
 // ============================================================================
-// SECCIÓN 5: QUERIES DE MONITOREO Y VALIDACIÓN
+// SECTION 5: MONITORING AND VALIDATION QUERIES
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// 5.1 Verificar Estado de las Tablas de Métricas
+// 5.1 Check Metrics Tables Status
 // ----------------------------------------------------------------------------
 
-// Ver últimos registros de postgres_activity_metrics
+// View latest records from postgres_activity_metrics
 postgres_activity_metrics
 | order by Timestamp desc
 | take 20;
 
-// Estadísticas por servidor
+// Statistics by server
 postgres_activity_metrics
 | where Timestamp >= ago(24h)
 | summarize 
@@ -968,7 +1016,7 @@ postgres_activity_metrics
 
 
 // ----------------------------------------------------------------------------
-// 5.2 Verificar Frescura de Datos
+// 5.2 Check Data Freshness
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -983,7 +1031,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 5.3 Cobertura de AUDIT Logs
+// 5.3 AUDIT Logs Coverage
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -1000,7 +1048,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// 5.4 Distribución de Backend Types
+// 5.4 Backend Types Distribution
 // ----------------------------------------------------------------------------
 
 bronze_pssql_alllogs_nometrics
@@ -1010,11 +1058,11 @@ bronze_pssql_alllogs_nometrics
 
 
 // ============================================================================
-// SECCIÓN 6: TROUBLESHOOTING & MANTENIMIENTO
+// SECTION 6: TROUBLESHOOTING & MAINTENANCE
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// Ver Update Policies activas
+// View Active Update Policies
 // ----------------------------------------------------------------------------
 .show table postgres_activity_metrics policy update
 .show table postgres_error_metrics policy update
@@ -1022,7 +1070,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// Ver errores de ingesta
+// View Ingestion Failures
 // ----------------------------------------------------------------------------
 .show ingestion failures
 | where Table in ("postgres_activity_metrics", "postgres_error_metrics", "postgres_user_metrics")
@@ -1031,7 +1079,7 @@ bronze_pssql_alllogs_nometrics
 
 
 // ----------------------------------------------------------------------------
-// Forzar refresh manual (si es necesario)
+// Force Manual Refresh (if needed)
 // ----------------------------------------------------------------------------
 // .refresh table postgres_activity_metrics
 // .refresh table postgres_error_metrics
@@ -1039,10 +1087,10 @@ bronze_pssql_alllogs_nometrics
 
 
 // ============================================================================
-// SECCIÓN 7: CLEANUP (OPCIONAL - Solo para reiniciar desde cero)
+// SECTION 7: CLEANUP (OPTIONAL - Only to restart from scratch)
 // ============================================================================
 
-// ⚠️ DESCOMENTARIZA SOLO SI QUIERES ELIMINAR TODO Y EMPEZAR DE NUEVO
+// ⚠️ UNCOMMENT ONLY IF YOU WANT TO DELETE EVERYTHING AND START OVER
 
 // .drop table postgres_activity_metrics ifexists
 // .drop table postgres_error_metrics ifexists
@@ -1053,5 +1101,5 @@ bronze_pssql_alllogs_nometrics
 
 
 // ============================================================================
-// FIN DEL SETUP UNIFICADO - PostgreSQL Anomaly Detection
+// END OF UNIFIED SETUP - PostgreSQL Anomaly Detection
 // ============================================================================
