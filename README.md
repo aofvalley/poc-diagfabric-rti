@@ -69,7 +69,7 @@ You can use the automated script or create resources manually.
 
 **Option A: Automated Script**
 ```bash
-./scripts/deploy-fabric.sh <workspace_name>
+working on it
 ```
 
 **Option B: Manual Setup**
