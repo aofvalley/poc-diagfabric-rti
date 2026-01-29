@@ -1,58 +1,58 @@
 -- ============================================================================
--- TEST 4: ANOMALÍA 4 - Escalada de Privilegios (Privilege Escalation)
+-- TEST 4: ANOMALY 4 - Privilege Escalation
 -- ============================================================================
--- 📊 Requisito: Detectar >3 operaciones de privilegios en 5 minutos
--- 🎯 Estrategia: Crear roles primero, luego ejecutar GRANTs en ráfaga
--- ⏱️ Tiempo de ejecución: ~30 segundos
--- 📈 Resultado esperado en dashboard (1-2 min después):
+-- 📊 Requirement: Detect >3 privilege operations in 5 minutes
+-- 🎯 Strategy: Create roles first, then execute GRANTs in rapid succession
+-- ⏱️ Execution time: ~30 seconds
+-- 📈 Expected dashboard result (1-2 min after):
 --    - AnomalyType: Privilege Escalation
 --    - PrivilegeOpsCount: 10+
 --    - Operations: GRANT, REVOKE, CREATE ROLE
 -- ============================================================================
 
--- 🏗️ PREPARACIÓN: Limpiar roles previos si existen
+-- 🏗️ PREPARATION: Clean up previous roles if they exist
 DROP ROLE IF EXISTS anomaly_test_analyst;
 DROP ROLE IF EXISTS anomaly_test_developer;
 DROP ROLE IF EXISTS anomaly_test_admin;
 DROP ROLE IF EXISTS anomaly_test_readonly;
 
--- 🏗️ Crear roles nuevos (4 operaciones CREATE ROLE)
+-- 🏗️ Create new roles (4 CREATE ROLE operations)
 CREATE ROLE anomaly_test_analyst;
 CREATE ROLE anomaly_test_developer;
 CREATE ROLE anomaly_test_admin;
 CREATE ROLE anomaly_test_readonly;
 
--- ⚠️ FASE SOSPECHOSA: Ejecutar múltiples GRANTs EN MENOS DE 5 MINUTOS
--- Grant 1: Permisos de lectura
+-- ⚠️ SUSPICIOUS PHASE: Execute multiple GRANTs WITHIN 5 MINUTES
+-- Grant 1: Read permissions
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO anomaly_test_analyst;
 
--- Grant 2: Permisos de escritura
+-- Grant 2: Write permissions
 GRANT INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO anomaly_test_developer;
 
--- Grant 3: Permisos completos
+-- Grant 3: Full permissions
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO anomaly_test_admin;
 
--- Grant 4: Herencia de roles
+-- Grant 4: Role inheritance
 GRANT anomaly_test_analyst TO anomaly_test_developer;
 
--- Grant 5: Más herencia
+-- Grant 5: More inheritance
 GRANT anomaly_test_developer TO anomaly_test_admin;
 
--- Grant 6: Permisos de schema
+-- Grant 6: Schema permissions
 GRANT USAGE ON SCHEMA public TO anomaly_test_readonly;
 
--- Grant 7: Permisos SELECT específicos
+-- Grant 7: Specific SELECT permissions
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO anomaly_test_readonly;
 
--- Revoke 1: Revocar permisos
+-- Revoke 1: Revoke permissions
 REVOKE ALL ON SCHEMA public FROM anomaly_test_analyst;
 
--- Revoke 2: Otro revoke
+-- Revoke 2: Another revoke
 REVOKE INSERT ON ALL TABLES IN SCHEMA public FROM anomaly_test_developer;
 
--- ✅ TOTAL: 13 operaciones de privilegios (4 CREATE + 7 GRANT + 2 REVOKE)
+-- ✅ TOTAL: 13 privilege operations (4 CREATE + 7 GRANT + 2 REVOKE)
 
--- 🧹 LIMPIEZA FINAL: Eliminar roles de prueba
+-- 🧹 FINAL CLEANUP: Delete test roles
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM anomaly_test_analyst;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM anomaly_test_developer;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM anomaly_test_admin;

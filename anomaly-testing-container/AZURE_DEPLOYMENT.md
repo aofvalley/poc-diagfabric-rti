@@ -1,8 +1,8 @@
-# Guía de Despliegue en Azure Container Apps
+# Azure Container Apps Deployment Guide
 
-Esta guía proporciona instrucciones paso a paso para desplegar la solución de testing de anomalías en Azure Container Apps.
+This guide provides step-by-step instructions for deploying the anomaly testing solution to Azure Container Apps.
 
-## 🎯 Arquitectura de Despliegue
+## 🎯 Deployment Architecture
 
 ```
 Azure Container Registry (ACR)
@@ -16,40 +16,40 @@ PostgreSQL Flexible Server(s)
 Event Hub → Fabric Event Stream → KQL Database
 ```
 
-## 📋 Prerequisitos
+## 📋 Prerequisites
 
-- Azure CLI instalado y autenticado (`az login`)
-- Docker instalado localmente
-- Permisos de Contributor en la suscripción Azure
-- PostgreSQL Flexible Server(s) ya configurado(s) con pgaudit
+- Azure CLI installed and authenticated (`az login`)
+- Docker installed locally
+- Contributor permissions in Azure subscription
+- PostgreSQL Flexible Server(s) already configured with pgaudit
 
-## 🚀 Paso 1: Crear Recursos Base
+## 🚀 Step 1: Create Base Resources
 
-### 1.1 Crear Resource Group
+### 1.1 Create Resource Group
 
 ```bash
 RESOURCE_GROUP="rg-fabric-anomaly-testing"
 LOCATION="westeurope"
 
-# Crear resource group
+# Create resource group
 az group create \
   --name $RESOURCE_GROUP \
   --location $LOCATION
 ```
 
-### 1.2 Crear Azure Container Registry
+### 1.2 Create Azure Container Registry
 
 ```bash
-ACR_NAME="acrfabricanomalies"  # Debe ser único globalmente
+ACR_NAME="acrfabricanomalies"  # Must be globally unique
 
-# Crear ACR
+# Create ACR
 az acr create \
   --resource-group $RESOURCE_GROUP \
   --name $ACR_NAME \
   --sku Basic \
   --admin-enabled true
 
-# Obtener credenciales
+# Get credentials
 ACR_USERNAME=$(az acr credential show --name $ACR_NAME --query username -o tsv)
 ACR_PASSWORD=$(az acr credential show --name $ACR_NAME --query passwords[0].value -o tsv)
 ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
@@ -57,28 +57,28 @@ ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
 echo "ACR Login Server: $ACR_LOGIN_SERVER"
 ```
 
-## 🐳 Paso 2: Construir y Publicar Imagen
+## 🐳 Step 2: Build and Push Image
 
-### 2.1 Login en ACR
+### 2.1 Login to ACR
 
 ```bash
 az acr login --name $ACR_NAME
 ```
 
-### 2.2 Construir Imagen
+### 2.2 Build Image
 
 ```bash
-# Desde el directorio anomaly-testing-container/
+# From the anomaly-testing-container/ directory
 docker build -t ${ACR_LOGIN_SERVER}/postgres-anomaly-tester:v1.0 .
 ```
 
-### 2.3 Publicar Imagen
+### 2.3 Push Image
 
 ```bash
 docker push ${ACR_LOGIN_SERVER}/postgres-anomaly-tester:v1.0
 ```
 
-### 2.4 Verificar Imagen
+### 2.4 Verify Image
 
 ```bash
 az acr repository show \
@@ -86,27 +86,27 @@ az acr repository show \
   --repository postgres-anomaly-tester
 ```
 
-## ☁️ Paso 3: Crear Container Apps Environment
+## ☁️ Step 3: Create Container Apps Environment
 
 ```bash
 ENVIRONMENT_NAME="env-fabric-anomaly-testing"
 
-# Crear environment
+# Create environment
 az containerapp env create \
   --name $ENVIRONMENT_NAME \
   --resource-group $RESOURCE_GROUP \
   --location $LOCATION
 ```
 
-## 🎯 Paso 4: Crear Container App Job
+## 🎯 Step 4: Create Container App Job
 
-### 4.1 Configurar Variables
+### 4.1 Configure Variables
 
 ```bash
 # PostgreSQL Configuration
 POSTGRES_SERVERS="server1.postgres.database.azure.com,server2.postgres.database.azure.com"
 POSTGRES_USER="postgres_admin"
-POSTGRES_PASSWORD="YourSecurePassword123!"  # Cambiar por tu password real
+POSTGRES_PASSWORD="YourSecurePassword123!"  # Replace with your actual password
 POSTGRES_DATABASE="adventureworks"
 
 # Test Configuration
@@ -114,7 +114,7 @@ DELAY_BETWEEN_TESTS=120
 ENABLE_BRUTE_FORCE=false
 ```
 
-### 4.2 Crear Job con Trigger Manual
+### 4.2 Create Job with Manual Trigger
 
 ```bash
 JOB_NAME="job-anomaly-demo"
@@ -145,9 +145,9 @@ az containerapp job create \
     ENABLE_BRUTE_FORCE="$ENABLE_BRUTE_FORCE"
 ```
 
-## 🎬 Paso 5: Ejecutar Durante la Demo
+## 🎬 Step 5: Run During Demo
 
-### 5.1 Iniciar Job Manualmente
+### 5.1 Start Job Manually
 
 ```bash
 # Start job
@@ -156,16 +156,16 @@ az containerapp job start \
   --resource-group $RESOURCE_GROUP
 ```
 
-### 5.2 Monitorear Ejecución
+### 5.2 Monitor Execution
 
 ```bash
-# Ver historial de ejecuciones
+# View execution history
 az containerapp job execution list \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP \
   --output table
 
-# Obtener logs de última ejecución
+# Get logs from last execution
 EXECUTION_NAME=$(az containerapp job execution list \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP \
@@ -177,12 +177,12 @@ az containerapp job logs show \
   --execution $EXECUTION_NAME
 ```
 
-## 🔧 Configuración Avanzada
+## 🔧 Advanced Configuration
 
-### Actualizar Variables de Entorno
+### Update Environment Variables
 
 ```bash
-# Actualizar configuración del job
+# Update job configuration
 az containerapp job update \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP \
@@ -191,35 +191,35 @@ az containerapp job update \
     ENABLE_BRUTE_FORCE="true"
 ```
 
-### Actualizar Imagen
+### Update Image
 
 ```bash
-# 1. Construir nueva versión
+# 1. Build new version
 docker build -t ${ACR_LOGIN_SERVER}/postgres-anomaly-tester:v1.1 .
 docker push ${ACR_LOGIN_SERVER}/postgres-anomaly-tester:v1.1
 
-# 2. Actualizar job
+# 2. Update job
 az containerapp job update \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP \
   --image ${ACR_LOGIN_SERVER}/postgres-anomaly-tester:v1.1
 ```
 
-## 🔐 Configuración de Firewall PostgreSQL
+## 🔐 PostgreSQL Firewall Configuration
 
-Para que el Container App pueda conectarse a PostgreSQL, añade la IP de salida:
+To allow Container App to connect to PostgreSQL, add the outbound IP:
 
 ```bash
-# Obtener IP de salida del Container Apps Environment
+# Get outbound IP from Container Apps Environment
 OUTBOUND_IP=$(az containerapp env show \
   --name $ENVIRONMENT_NAME \
   --resource-group $RESOURCE_GROUP \
   --query properties.staticIp -o tsv)
 
-echo "IP de salida: $OUTBOUND_IP"
+echo "Outbound IP: $OUTBOUND_IP"
 
-# Añadir regla de firewall en PostgreSQL
-POSTGRES_SERVER_NAME="tu-servidor-postgres"
+# Add firewall rule in PostgreSQL
+POSTGRES_SERVER_NAME="your-postgres-server"
 
 az postgres flexible-server firewall-rule create \
   --resource-group $RESOURCE_GROUP \
@@ -229,9 +229,9 @@ az postgres flexible-server firewall-rule create \
   --end-ip-address $OUTBOUND_IP
 ```
 
-## 📊 Monitoreo y Logs
+## 📊 Monitoring and Logs
 
-### Ver Logs en Tiempo Real (durante ejecución)
+### View Real-Time Logs (during execution)
 
 ```bash
 # Streaming logs
@@ -241,19 +241,19 @@ az containerapp job logs show \
   --follow
 ```
 
-### Ver Métricas
+### View Metrics
 
 ```bash
-# Historial de ejecuciones
+# Execution history
 az containerapp job execution list \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP \
   --output table
 ```
 
-## 🧹 Limpieza de Recursos
+## 🧹 Clean Up Resources
 
-### Eliminar Solo el Job
+### Delete Only the Job
 
 ```bash
 az containerapp job delete \
@@ -262,7 +262,7 @@ az containerapp job delete \
   --yes
 ```
 
-### Eliminar Todo el Resource Group
+### Delete Entire Resource Group
 
 ```bash
 az group delete \
@@ -271,38 +271,38 @@ az group delete \
   --no-wait
 ```
 
-## 🎯 Flujo Completo para Demos
+## 🎯 Complete Demo Flow
 
-### Preparación (1 vez)
+### Preparation (1 time)
 
 ```bash
-# 1. Crear recursos (pasos 1-4)
-# 2. Verificar conectividad a PostgreSQL
-# 3. Validar que Fabric está recibiendo logs
+# 1. Create resources (steps 1-4)
+# 2. Verify PostgreSQL connectivity
+# 3. Validate Fabric is receiving logs
 ```
 
-### Durante la Demo
+### During the Demo
 
 ```bash
-# 1. Iniciar job
+# 1. Start job
 az containerapp job start \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP
 
-# 2. Abrir dashboard de Fabric en segunda pantalla
+# 2. Open Fabric dashboard on second screen
 
-# 3. Mientras ejecuta (~20 minutos con delays de 120s):
-#    - Explicar cada test
-#    - Mostrar logs en tiempo real
-#    - Mostrar anomalías apareciendo en Fabric
+# 3. While running (~20 minutes with 120s delays):
+#    - Explain each test
+#    - Show real-time logs
+#    - Show anomalies appearing in Fabric
 
-# 4. Al finalizar, mostrar resumen de anomalías detectadas
+# 4. When finished, show summary of detected anomalies
 ```
 
-### Verificación Post-Demo
+### Post-Demo Verification
 
 ```bash
-# Ver logs completos
+# View complete logs
 EXECUTION_NAME=$(az containerapp job execution list \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP \
@@ -319,51 +319,51 @@ az containerapp job logs show \
 ### Error: "Cannot connect to PostgreSQL"
 
 ```bash
-# Verificar firewall
+# Verify firewall
 az postgres flexible-server firewall-rule list \
   --resource-group $RESOURCE_GROUP \
   --name $POSTGRES_SERVER_NAME
 
-# Verificar que la IP del Container Apps está permitida
+# Verify Container Apps IP is allowed
 ```
 
 ### Error: "Image pull failed"
 
 ```bash
-# Verificar credenciales ACR
+# Verify ACR credentials
 az containerapp job show \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP \
   --query properties.configuration.registries
 
-# Re-crear con credenciales actualizadas si es necesario
+# Recreate with updated credentials if necessary
 ```
 
-### Job se Queda en Estado "Running"
+### Job Stuck in "Running" State
 
 ```bash
-# Verificar logs para ver dónde está bloqueado
+# Check logs to see where it's stuck
 az containerapp job logs show \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP \
   --execution $EXECUTION_NAME
 
-# Cancelar ejecución si es necesario
+# Cancel execution if necessary
 az containerapp job stop \
   --name $JOB_NAME \
   --resource-group $RESOURCE_GROUP \
   --execution-name $EXECUTION_NAME
 ```
 
-## 💡 Tips para Demos Exitosas
+## 💡 Tips for Successful Demos
 
-1. **Ejecuta un dry-run** antes de la demo con el cliente
-2. **Ten el dashboard de Fabric abierto** en una segunda pantalla
-3. **Prepara explicaciones** de cada anomalía mientras ejecuta
-4. **Delay de 120s** es óptimo para demos (permite explicar mientras espera ingesta)
-5. **Habilita brute force solo si lo vas a mostrar** (añade ~1 minuto extra)
-6. **Ten los logs del job visibles** para transparencia con el cliente
+1. **Do a dry-run** before the client demo
+2. **Have Fabric dashboard open** on a second screen
+3. **Prepare explanations** for each anomaly while it runs
+4. **120s delay** is optimal for demos (allows explanation while waiting for ingestion)
+5. **Enable brute force only if you'll show it** (adds ~1 minute extra)
+6. **Keep job logs visible** for transparency with clients
 
 ---
 
-**¿Problemas?** Revisa la sección de Troubleshooting o consulta los logs completos.
+**Having issues?** Check the Troubleshooting section or review the complete logs.

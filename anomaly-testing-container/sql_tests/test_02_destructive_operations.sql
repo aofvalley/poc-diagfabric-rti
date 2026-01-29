@@ -1,28 +1,28 @@
 -- ============================================================================
--- TEST 2: ANOMALÍA 2 - Operaciones Destructivas Masivas
+-- TEST 2: ANOMALY 2 - Massive Destructive Operations
 -- ============================================================================
--- 📊 Requisito: >5 operaciones destructivas en ventanas de 2 minutos
--- 🎯 Estrategia: CREATE + INSERT + UPDATEs + DELETEs para generar actividad destructiva
--- ⏱️ Tiempo de ejecución: ~30 segundos
--- 📈 Resultado esperado en dashboard (1-2 min después):
+-- 📊 Requirement: >5 destructive operations within 2 minute windows
+-- 🎯 Strategy: CREATE + INSERT + UPDATEs + DELETEs to generate destructive activity
+-- ⏱️ Execution time: ~30 seconds
+-- 📈 Expected dashboard result (1-2 min after):
 --    - AnomalyType: Mass Destructive Operations
 --    - OperationCount: 10+
 --    - Operations: UPDATE, DELETE
 -- ============================================================================
 
--- 🔧 PREPARACIÓN: Crear tabla de test si no existe
+-- 🔧 PREPARATION: Create test table if it doesn't exist
 CREATE TABLE IF NOT EXISTS public.temp_anomaly_test (
     id SERIAL PRIMARY KEY,
     test_value VARCHAR(255),
     last_modified TIMESTAMP DEFAULT NOW()
 );
 
--- Insertar datos si la tabla está vacía
+-- Insert data if table is empty
 INSERT INTO public.temp_anomaly_test (test_value) 
 SELECT 'initial_value_' || generate_series(1, 10)
 WHERE NOT EXISTS (SELECT 1 FROM public.temp_anomaly_test LIMIT 1);
 
--- ⚠️ FASE DESTRUCTIVA: 10 operaciones UPDATE en ráfaga
+-- ⚠️ DESTRUCTIVE PHASE: 10 UPDATE operations in rapid succession
 UPDATE public.temp_anomaly_test SET test_value = 'batch1_update1', last_modified = NOW() WHERE id = 1;
 
 UPDATE public.temp_anomaly_test SET test_value = 'batch1_update2', last_modified = NOW() WHERE id = 2;
@@ -43,4 +43,4 @@ UPDATE public.temp_anomaly_test SET test_value = 'batch2_update1', last_modified
 
 UPDATE public.temp_anomaly_test SET test_value = 'batch2_update2', last_modified = NOW() WHERE id = 2;
 
--- ✅ TOTAL: 10 operaciones UPDATE ejecutadas
+-- ✅ TOTAL: 10 UPDATE operations executed

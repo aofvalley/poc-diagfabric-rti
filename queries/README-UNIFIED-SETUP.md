@@ -1,83 +1,83 @@
-# 🎯 PostgreSQL Anomaly Detection - Setup Unificado
+# 🎯 PostgreSQL Anomaly Detection - Unified Setup
 
-Este documento describe el archivo unificado `UNIFIED-ANOMALY-DETECTION.kql` que consolida todo el sistema de detección de anomalías para PostgreSQL en Microsoft Fabric Real-Time Intelligence.
+This document describes the unified `UNIFIED-ANOMALY-DETECTION.kql` file that consolidates the entire PostgreSQL anomaly detection system for Microsoft Fabric Real-Time Intelligence.
 
-## 📋 Contenido del Archivo Unificado
+## 📋 File Content
 
-### **SECCIÓN 1: Setup - Creación de Infraestructura**
+### **SECTION 1: Setup - Infrastructure Creation**
 
-#### 1.1-1.2: Tabla Principal de Métricas de Actividad
+#### 1.1-1.2: Main Activity Metrics Table
 ```kql
 .create table postgres_activity_metrics (...)
 .create-or-alter function postgres_activity_metrics_transform() {...}
 ```
-**Propósito**: Tabla de métricas agregadas en ventanas de 5 minutos con dimensiones temporales (hora del día, día de la semana) para ML.
+**Purpose**: Aggregated metrics table in 5-minute windows with temporal dimensions (hour of day, day of week) for ML.
 
-**Columnas clave**:
+**Key Columns**:
 - `ActivityCount`, `AuditLogs`, `Errors`, `Connections`
-- `UniqueUsers`: Detecta cardinalidad anormal de usuarios
-- `SelectOps`, `WriteOps`, `DDLOps`: Desglose de operaciones
-- `PrivilegeOps`: GRANT/REVOKE para detectar escalada de privilegios
-- `HourOfDay`, `DayOfWeek`: Patrones temporales
+- `UniqueUsers`: Detects abnormal user cardinality
+- `SelectOps`, `WriteOps`, `DDLOps`: Operations breakdown
+- `PrivilegeOps`: GRANT/REVOKE for detecting privilege escalation
+- `HourOfDay`, `DayOfWeek`: Temporal patterns
 
-#### 1.3-1.4: Update Policy y Carga Histórica
+#### 1.3-1.4: Update Policy and Historical Load
 ```kql
 .alter table postgres_activity_metrics policy update @'[...]'
 .set-or-append postgres_activity_metrics <| ...
 ```
-**Propósito**: Pipeline automático que actualiza la tabla en tiempo real + carga de 30 días de histórico para entrenar el modelo de ML.
+**Purpose**: Automatic pipeline that updates the table in real-time + loads 30 days of history to train ML model.
 
-#### 1.5-1.6: Tablas Auxiliares
-- **`postgres_error_metrics`**: Métricas de errores por servidor (ventanas de 1 minuto)
-- **`postgres_user_metrics`**: Actividad por usuario con correlación de sesiones (ventanas de 1 hora)
-
----
-
-### **SECCIÓN 2: Queries de Anomalías en Tiempo Real**
-
-#### 2.1 Extracción Masiva de Datos (Data Exfiltration)
-**Threshold**: >15 SELECTs en 5 minutos  
-**Detecta**: Queries masivas, COPY, pg_dump  
-**Severidad**: MEDIUM (15-30), HIGH (30-50), CRITICAL (>50)
-
-#### 2.2 Operaciones Destructivas Masivas
-**Threshold**: >5 operaciones destructivas en 2 minutos  
-**Detecta**: DELETE, UPDATE, TRUNCATE, DROP TABLE/DATABASE  
-**Severidad**: MEDIUM (5-10), HIGH (10-20), CRITICAL (>20)
-
-#### 2.3 Escalada de Errores Críticos
-**Threshold**: >3 errores en 1 minuto  
-**Detecta**: ERROR, FATAL, PANIC, códigos SQL de error  
-**Categorías**: Authentication, Permission, Connection, Resource, Other  
-**Severidad**: MEDIUM (3-8), HIGH (8-15), CRITICAL (>15)
-
-#### 2.4 Escalada de Privilegios
-**Threshold**: >3 operaciones de privilegios en 5 minutos  
-**Detecta**: GRANT, REVOKE, ALTER ROLE, CREATE/DROP ROLE  
-**Severidad**: MEDIUM (3-5), HIGH (5-10), CRITICAL (>10)
-
-#### 2.5 Reconocimiento Cross-Schema (Lateral Movement)
-**Threshold**: >4 schemas diferentes accedidos en 10 minutos  
-**Detecta**: Acceso a múltiples schemas (movimiento lateral)  
-**Severidad**: MEDIUM (4-5), HIGH (5-8), CRITICAL (>8)
-
-#### 2.6 Enumeración de Schema de Sistema (Deep Scan)
-**Threshold**: >10 queries a tablas de sistema en 5 minutos  
-**Detecta**: pg_catalog, information_schema, pg_tables, pg_class, etc.  
-**Severidad**: MEDIUM (10-15), HIGH (15-30), CRITICAL (>30)  
-**RiskLevel**: 🔴 HIGH (>5 tablas), 🟠 MEDIUM
-
-#### 2.7 ML Anomaly Detection - Desviación de Baseline
-**Algoritmo**: `series_decompose_anomalies()` con sensibilidad 1.5  
-**Lookback**: 7 días para establecer baseline normal  
-**Detección**: Anomalías altas (📈) o bajas (📉)  
-**Severidad**: MEDIUM (score 1.5-2.0), HIGH (2.0-3.0), CRITICAL (>3.0)
+#### 1.5-1.6: Auxiliary Tables
+- **`postgres_error_metrics`**: Error metrics per server (1-minute windows)
+- **`postgres_user_metrics`**: Activity per user with session correlation (1-hour windows)
 
 ---
 
-### **SECCIÓN 3: Dashboard Principal**
+### **SECTION 2: Real-Time Anomaly Queries**
 
-**Query unificada** que combina todas las anomalías en una sola vista:
+#### 2.1 Massive Data Extraction (Data Exfiltration)
+**Threshold**: >15 SELECTs in 5 minutes  
+**Detects**: Massive queries, COPY, pg_dump  
+**Severity**: MEDIUM (15-30), HIGH (30-50), CRITICAL (>50)
+
+#### 2.2 Massive Destructive Operations
+**Threshold**: >5 destructive operations in 2 minutes  
+**Detects**: DELETE, UPDATE, TRUNCATE, DROP TABLE/DATABASE  
+**Severity**: MEDIUM (5-10), HIGH (10-20), CRITICAL (>20)
+
+#### 2.3 Critical Error Spike
+**Threshold**: >3 errors in 1 minute  
+**Detects**: ERROR, FATAL, PANIC, SQL error codes  
+**Categories**: Authentication, Permission, Connection, Resource, Other  
+**Severity**: MEDIUM (3-8), HIGH (8-15), CRITICAL (>15)
+
+#### 2.4 Privilege Escalation
+**Threshold**: >3 privilege operations in 5 minutes  
+**Detects**: GRANT, REVOKE, ALTER ROLE, CREATE/DROP ROLE  
+**Severity**: MEDIUM (3-5), HIGH (5-10), CRITICAL (>10)
+
+#### 2.5 Cross-Schema Reconnaissance (Lateral Movement)
+**Threshold**: >4 different schemas accessed in 10 minutes  
+**Detects**: Access to multiple schemas (lateral movement)  
+**Severity**: MEDIUM (4-5), HIGH (5-8), CRITICAL (>8)
+
+#### 2.6 System Schema Enumeration (Deep Scan)
+**Threshold**: >10 queries to system tables in 5 minutes  
+**Detects**: pg_catalog, information_schema, pg_tables, pg_class, etc.  
+**Severity**: MEDIUM (10-15), HIGH (15-30), CRITICAL (>30)  
+**RiskLevel**: 🔴 HIGH (>5 tables), 🟠 MEDIUM
+
+#### 2.7 ML Anomaly Detection - Baseline Deviation
+**Algorithm**: `series_decompose_anomalies()` with sensitivity 1.5  
+**Lookback**: 7 days to establish normal baseline  
+**Detection**: High anomalies (📈) or low anomalies (📉)  
+**Severity**: MEDIUM (score 1.5-2.0), HIGH (2.0-3.0), CRITICAL (>3.0)
+
+---
+
+### **SECTION 3: Main Dashboard**
+
+**Unified query** that combines all anomalies in a single view:
 ```kql
 union
     (suspiciousDataAccess),
@@ -90,89 +90,89 @@ union
 | take 100;
 ```
 
-**Vista**: Top 100 anomalías más recientes de todos los tipos, ordenadas por timestamp.
+**View**: Top 100 most recent anomalies of all types, ordered by timestamp.
 
 ---
 
-### **SECCIÓN 4: Dashboards de Métricas Operacionales**
+### **SECTION 4: Operational Metrics Dashboards**
 
-#### 4.1 Actividad General por Servidor (1h)
-Gráfico de líneas con total de eventos, errores, warnings y audit logs por servidor.
+#### 4.1 General Activity per Server (1h)
+Line chart with total events, errors, warnings, and audit logs per server.
 
-#### 4.2 Distribución de Operaciones AUDIT (6h)
-Gráfico circular con tipos de operaciones: SELECT, INSERT, UPDATE, DELETE, DDL, etc.
+#### 4.2 AUDIT Operations Distribution (6h)
+Pie chart with operation types: SELECT, INSERT, UPDATE, DELETE, DDL, etc.
 
-#### 4.3 Top 15 Tablas Más Accedidas (6h)
-Lista de tablas con mayor número de accesos, tipos de objeto y último acceso.
+#### 4.3 Top 15 Most Accessed Tables (6h)
+List of tables with highest access count, object types, and last access.
 
-#### 4.4 Timeline de Operaciones AUDIT (1h)
-Gráfico de líneas por tipo de operación (SELECT, WRITE, DELETE, INSERT, DDL, MISC).
+#### 4.4 AUDIT Operations Timeline (1h)
+Line chart by operation type (SELECT, WRITE, DELETE, INSERT, DDL, MISC).
 
-#### 4.5 Errores por Categoría (24h)
-Gráfico de área con categorías: Auth, Permission, Connection, Resource, Other.
+#### 4.5 Errors by Category (24h)
+Area chart with categories: Auth, Permission, Connection, Resource, Other.
 
-#### 4.6 Actividad por Backend Type (1h)
-Gráfico de líneas comparando `client backend` vs `autovacuum`, `checkpointer`, etc.
+#### 4.6 Activity by Backend Type (1h)
+Line chart comparing `client backend` vs `autovacuum`, `checkpointer`, etc.
 
-#### 4.7 TOP 10 Usuarios por Actividad (24h)
-Tabla con: TotalActivity, AuditLogs, Connections, Errors, Databases, LastActivity.
+#### 4.7 TOP 10 Users by Activity (24h)
+Table with: TotalActivity, AuditLogs, Connections, Errors, Databases, LastActivity.
 
-#### 4.8 TOP 10 Hosts/IPs por Conexiones (24h)
-Tabla con: TotalConnections, UniqueUsers, ErrorRate, Riesgo (HIGH/MEDIUM/LOW).
+#### 4.8 TOP 10 Hosts/IPs by Connections (24h)
+Table with: TotalConnections, UniqueUsers, ErrorRate, Risk (HIGH/MEDIUM/LOW).
 
 #### 4.9 Heat Map User + Database (24h)
-Matriz de actividad por combinación usuario-database (ActivityCount > 10).
+Activity matrix by user-database combination (ActivityCount > 10).
 
-#### 4.10 Fallos de Autenticación (24h)
-Tabla con intentos fallidos por usuario/host, ThreatLevel (CRITICAL/HIGH/MEDIUM/LOW).
+#### 4.10 Authentication Failures (24h)
+Table with failed attempts by user/host, ThreatLevel (CRITICAL/HIGH/MEDIUM/LOW).
 
-#### 4.11 Top Códigos de Error (24h)
-Top 15 códigos SQL de error con descripción y categoría.
+#### 4.11 Top Error Codes (24h)
+Top 15 SQL error codes with description and category.
 
 ---
 
-### **SECCIÓN 5: Queries de Monitoreo y Validación**
+### **SECTION 5: Monitoring and Validation Queries**
 
-#### 5.1 Verificar Estado de las Tablas de Métricas
+#### 5.1 Verify Metrics Tables Status
 ```kql
 postgres_activity_metrics | order by Timestamp desc | take 20;
 ```
-Confirma que las tablas se están actualizando correctamente.
+Confirms tables are updating correctly.
 
-#### 5.2 Verificar Frescura de Datos
-Muestra latencia de los datos (✅ Fresh < 5min, ⚠️ Stale > 5min).
+#### 5.2 Verify Data Freshness
+Shows data latency (✅ Fresh < 5min, ⚠️ Stale > 5min).
 
-#### 5.3 Cobertura de AUDIT Logs
-Porcentaje de logs que son AUDIT vs total, por servidor.
+#### 5.3 AUDIT Log Coverage
+Percentage of AUDIT logs vs total, per server.
 
-#### 5.4 Distribución de Backend Types
-Count de eventos por tipo de backend (validación de filtros).
+#### 5.4 Backend Types Distribution
+Event count by backend type (validation of filters).
 
 ---
 
-### **SECCIÓN 6: Troubleshooting & Mantenimiento**
+### **SECTION 6: Troubleshooting & Maintenance**
 
-#### Ver Update Policies activas
+#### View active Update Policies
 ```kql
 .show table postgres_activity_metrics policy update
 ```
 
-#### Ver errores de ingesta
+#### View ingestion errors
 ```kql
 .show ingestion failures
 | where Table in ("postgres_activity_metrics", "postgres_error_metrics", "postgres_user_metrics")
 ```
 
-#### Forzar refresh manual (comentado por defecto)
+#### Force manual refresh (commented by default)
 ```kql
 // .refresh table postgres_activity_metrics
 ```
 
 ---
 
-### **SECCIÓN 7: Cleanup (Opcional)**
+### **SECTION 7: Cleanup (Optional)**
 
-Comandos para eliminar todas las tablas y funciones (SOLO para reiniciar desde cero):
+Commands to delete all tables and functions (ONLY to restart from scratch):
 ```kql
 // .drop table postgres_activity_metrics ifexists
 // .drop table postgres_error_metrics ifexists
@@ -182,177 +182,177 @@ Comandos para eliminar todas las tablas y funciones (SOLO para reiniciar desde c
 
 ---
 
-## 🚀 Guía de Implementación
+## 🚀 Implementation Guide
 
-### Paso 1: Crear las Tablas de Métricas
-Ejecuta las queries de la **SECCIÓN 1** (1.1 a 1.6) en orden:
+### Step 1: Create Metrics Tables
+Run queries from **SECTION 1** (1.1 to 1.6) in order:
 
-1. Crear `postgres_activity_metrics`
-2. Crear función `postgres_activity_metrics_transform()`
-3. Configurar Update Policy
-4. Cargar datos históricos (30 días)
-5. Repetir para `postgres_error_metrics`
-6. Repetir para `postgres_user_metrics`
+1. Create `postgres_activity_metrics`
+2. Create function `postgres_activity_metrics_transform()`
+3. Configure Update Policy
+4. Load historical data (30 days)
+5. Repeat for `postgres_error_metrics`
+6. Repeat for `postgres_user_metrics`
 
-**Tiempo estimado**: 5-10 minutos (dependiendo del volumen de datos históricos).
+**Estimated time**: 5-10 minutes (depends on historical data volume).
 
 ---
 
-### Paso 2: Verificar que las Tablas se Actualizan
-Ejecuta las queries de la **SECCIÓN 5.1**:
+### Step 2: Verify Tables are Updating
+Run queries from **SECTION 5.1**:
 ```kql
 postgres_activity_metrics | order by Timestamp desc | take 20;
 ```
 
-**Esperado**: Deberías ver registros con timestamps recientes (últimos 5-10 minutos).
+**Expected**: You should see records with recent timestamps (last 5-10 minutes).
 
 ---
 
-### Paso 3: Configurar Anomaly Detector en Fabric UI
+### Step 3: Configure Anomaly Detector in Fabric UI
 
-> **⚠️ IMPORTANTE**: Para que la anomalía ML (2.7) funcione, debes configurar el detector de anomalías en Fabric UI.
+> **⚠️ IMPORTANT**: For ML anomaly (2.7) to work, you must configure the anomaly detector in Fabric UI.
 
-1. Abre tu **KQL Database** en Fabric Real-Time Intelligence
-2. Click en la tabla `postgres_activity_metrics`
-3. Click en **"Anomaly detection"** (botón superior)
-4. Configurar:
+1. Open your **KQL Database** in Fabric Real-Time Intelligence
+2. Click on the `postgres_activity_metrics` table
+3. Click **"Anomaly detection"** (top button)
+4. Configure:
    - **Table**: `postgres_activity_metrics`
    - **Timestamp column**: `Timestamp`
    - **Value to watch**: `ActivityCount`
    - **Group by dimension**: `ServerName`
-   - **Sensitivity**: `Medium` (ajustar después según resultados)
+   - **Sensitivity**: `Medium` (adjust later based on results)
    - **Lookback period**: `7 days`
 5. Click **"Create"**
-6. Espera **5-10 minutos** para que entrene el modelo
+6. Wait **5-10 minutes** for model to train
 
 ---
 
-### Paso 4: Crear Dashboards en Fabric
+### Step 4: Create Dashboards in Fabric
 
-#### Dashboard 1: **Anomalías en Tiempo Real**
-- Pin la query de **SECCIÓN 3** (Dashboard Principal)
-- Visualización: **Tabla** con columnas: TimeGenerated, AnomalyType, Severity, ServerName, User
-- Refresh: **Auto-refresh cada 1 minuto**
+#### Dashboard 1: **Real-Time Anomalies**
+- Pin query from **SECTION 3** (Main Dashboard)
+- Visualization: **Table** with columns: TimeGenerated, AnomalyType, Severity, ServerName, User
+- Refresh: **Auto-refresh every 1 minute**
 
-#### Dashboard 2: **Métricas Operacionales**
-Crea tiles individuales con las queries de **SECCIÓN 4**:
+#### Dashboard 2: **Operational Metrics**
+Create individual tiles with queries from **SECTION 4**:
 
-| Tile | Query | Tipo de Gráfico | Refresh |
-|------|-------|-----------------|---------|
-| 4.1 | Actividad General | Timechart | 2min |
-| 4.2 | Distribución AUDIT | Piechart | 5min |
-| 4.3 | Top Tablas | Tabla | 5min |
-| 4.4 | Timeline AUDIT | Timechart | 2min |
-| 4.5 | Errores Categoría | Areachart | 5min |
+| Tile | Query | Chart Type | Refresh |
+|------|-------|-----------|---------|
+| 4.1 | General Activity | Timechart | 2min |
+| 4.2 | AUDIT Distribution | Piechart | 5min |
+| 4.3 | Top Tables | Table | 5min |
+| 4.4 | AUDIT Timeline | Timechart | 2min |
+| 4.5 | Errors Categories | Areachart | 5min |
 | 4.6 | Backend Type | Timechart | 2min |
-| 4.7 | TOP Users | Tabla | 10min |
-| 4.8 | TOP Hosts | Tabla | 10min |
-| 4.9 | Heat Map User+DB | Tabla | 10min |
-| 4.10 | Fallos Auth | Tabla | 10min |
-| 4.11 | Top Códigos Error | Tabla | 10min |
+| 4.7 | TOP Users | Table | 10min |
+| 4.8 | TOP Hosts | Table | 10min |
+| 4.9 | Heat Map User+DB | Table | 10min |
+| 4.10 | Auth Failures | Table | 10min |
+| 4.11 | Top Error Codes | Table | 10min |
 
 ---
 
-### Paso 5: Configurar Alertas
+### Step 5: Configure Alerts
 
-Para cada anomalía crítica, configura alertas en Fabric:
+Configure alerts in Fabric for each critical anomaly:
 
-#### Alerta 1: Data Exfiltration
-- **Query**: `suspiciousDataAccess` (SECCIÓN 2.1)
-- **Condición**: `Severity == "CRITICAL"`
-- **Frecuencia**: Cada 5 minutos
-- **Acción**: Email + Teams
+#### Alert 1: Data Exfiltration
+- **Query**: `suspiciousDataAccess` (SECTION 2.1)
+- **Condition**: `Severity == "CRITICAL"`
+- **Frequency**: Every 5 minutes
+- **Action**: Email + Teams
 
-#### Alerta 2: Operaciones Destructivas
-- **Query**: `destructiveOperations` (SECCIÓN 2.2)
-- **Condición**: `Severity in ("CRITICAL", "HIGH")`
-- **Frecuencia**: Cada 2 minutos
-- **Acción**: Email + Teams + SMS
+#### Alert 2: Destructive Operations
+- **Query**: `destructiveOperations` (SECTION 2.2)
+- **Condition**: `Severity in ("CRITICAL", "HIGH")`
+- **Frequency**: Every 2 minutes
+- **Action**: Email + Teams + SMS
 
-#### Alerta 3: Escalada de Privilegios
-- **Query**: `privilegeEscalation` (SECCIÓN 2.4)
-- **Condición**: `Severity in ("CRITICAL", "HIGH")`
-- **Frecuencia**: Cada 5 minutos
-- **Acción**: Email + Teams + Incident in Sentinel
+#### Alert 3: Privilege Escalation
+- **Query**: `privilegeEscalation` (SECTION 2.4)
+- **Condition**: `Severity in ("CRITICAL", "HIGH")`
+- **Frequency**: Every 5 minutes
+- **Action**: Email + Teams + Incident in Sentinel
 
-#### Alerta 4: ML Anomaly Detection
-- **Query**: `mlAnomalyDetection` (SECCIÓN 2.7)
-- **Condición**: `Severity == "CRITICAL" and abs(DeviationScore) > 3.0`
-- **Frecuencia**: Cada 5 minutos
-- **Acción**: Email + Teams
+#### Alert 4: ML Anomaly Detection
+- **Query**: `mlAnomalyDetection` (SECTION 2.7)
+- **Condition**: `Severity == "CRITICAL" and abs(DeviationScore) > 3.0`
+- **Frequency**: Every 5 minutes
+- **Action**: Email + Teams
 
 ---
 
-## 📊 Métricas Clave para Monitoreo
+## 📊 Key Metrics for Monitoring
 
-### Métricas de Seguridad
-1. **Anomalías detectadas por tipo** (últimas 24h)
-2. **Severidad de anomalías** (CRITICAL/HIGH/MEDIUM)
-3. **Usuarios con comportamiento anómalo** (últimas 24h)
-4. **Hosts/IPs sospechosas** (ErrorRate > 10%)
-5. **Fallos de autenticación** (FailedAttempts > 10)
+### Security Metrics
+1. **Anomalies detected by type** (last 24h)
+2. **Anomaly severity** (CRITICAL/HIGH/MEDIUM)
+3. **Users with anomalous behavior** (last 24h)
+4. **Suspicious hosts/IPs** (ErrorRate > 10%)
+5. **Authentication failures** (FailedAttempts > 10)
 
-### Métricas Operacionales
-1. **Latencia de datos** (debe ser < 5 minutos)
-2. **Cobertura de AUDIT logs** (debe ser > 80%)
-3. **Tasa de errores** (ErrorRate por servidor)
-4. **Actividad por hora del día** (baseline para ML)
-5. **Backend Types distribution** (validar filtros)
+### Operational Metrics
+1. **Data latency** (should be < 5 minutes)
+2. **AUDIT log coverage** (should be > 80%)
+3. **Error rate** (ErrorRate per server)
+4. **Activity by hour of day** (baseline for ML)
+5. **Backend Types distribution** (validate filters)
 
-### Métricas de ML
-1. **Desviación del baseline** (DeviationScore)
-2. **Anomalías altas vs bajas** (📈 vs 📉)
-3. **Precisión del modelo** (false positives)
-4. **Baseline ajustado** (ExpectedBaseline vs ActivityCount)
+### ML Metrics
+1. **Baseline deviation** (DeviationScore)
+2. **High vs low anomalies** (📈 vs 📉)
+3. **Model accuracy** (false positives)
+4. **Adjusted baseline** (ExpectedBaseline vs ActivityCount)
 
 ---
 
 ## 🛠️ Troubleshooting
 
-### Problema 1: Las tablas de métricas no se actualizan
-**Solución**:
-1. Verificar que la Update Policy está activa:
+### Problem 1: Metrics tables not updating
+**Solution**:
+1. Verify the Update Policy is active:
    ```kql
    .show table postgres_activity_metrics policy update
    ```
-2. Ver errores de ingesta:
+2. Check ingestion errors:
    ```kql
    .show ingestion failures | where Table == "postgres_activity_metrics"
    ```
-3. Forzar refresh manual:
+3. Force manual refresh:
    ```kql
    .refresh table postgres_activity_metrics
    ```
 
-### Problema 2: ML Anomaly Detection no retorna resultados
-**Causas posibles**:
-- El modelo aún no ha entrenado (espera 5-10 minutos después de crear el detector)
-- No hay suficientes datos históricos (mínimo 7 días)
-- La sensibilidad es demasiado alta (ajusta a 1.0 o 1.2)
+### Problem 2: ML Anomaly Detection returns no results
+**Possible causes**:
+- Model hasn't trained yet (wait 5-10 minutes after creating detector)
+- Not enough historical data (minimum 7 days)
+- Sensitivity too high (adjust to 1.0 or 1.2)
 
-**Solución**:
+**Solution**:
 ```kql
-// Verificar que hay datos históricos
+// Verify historical data exists
 postgres_activity_metrics
 | where Timestamp >= ago(7d)
 | summarize count() by ServerName
 ```
 
-### Problema 3: Demasiados falsos positivos
-**Solución**: Ajustar thresholds en las queries de anomalías:
-- `suspiciousDataAccess`: Aumentar de 15 a 25 SELECTs
-- `destructiveOperations`: Aumentar de 5 a 10 operaciones
-- `errorSpike`: Aumentar de 3 a 5 errores
-- ML Anomaly: Reducir sensibilidad de 1.5 a 1.8
+### Problem 3: Too many false positives
+**Solution**: Adjust thresholds in anomaly queries:
+- `suspiciousDataAccess`: Increase from 15 to 25 SELECTs
+- `destructiveOperations`: Increase from 5 to 10 operations
+- `errorSpike`: Increase from 3 to 5 errors
+- ML Anomaly: Reduce sensitivity from 1.5 to 1.8
 
-### Problema 4: Correlación User/Database/Host no funciona
-**Causas posibles**:
-- Los logs de conexión no están llegando
-- El `processId` no coincide entre logs AUDIT y CONNECTION
+### Problem 4: User/Database/Host correlation not working
+**Possible causes**:
+- Connection logs not arriving
+- `processId` mismatch between AUDIT and CONNECTION logs
 
-**Solución**:
+**Solution**:
 ```kql
-// Verificar logs de conexión
+// Verify connection logs
 bronze_pssql_alllogs_nometrics
 | where EventProcessedUtcTime >= ago(1h)
 | where message contains "connection authorized"
@@ -361,41 +361,41 @@ bronze_pssql_alllogs_nometrics
 
 ---
 
-## 📚 Diferencias con Archivos Previos
+## 📚 Differences from Previous Files
 
-### Cambios respecto a `kql-queries-PRODUCTION.kql`
-- ✅ **Agregado**: Secciones de Setup completas (tablas, funciones, policies)
-- ✅ **Agregado**: Severidad dinámica en todas las anomalías
-- ✅ **Mejorado**: Correlación inline en lugar de `let sessionInfo` global
-- ✅ **Organizado**: Estructura modular por secciones numeradas
+### Changes vs `kql-queries-PRODUCTION.kql`
+- ✅ **Added**: Complete Setup sections (tables, functions, policies)
+- ✅ **Added**: Dynamic severity in all anomalies
+- ✅ **Improved**: Inline correlation instead of global `let sessionInfo`
+- ✅ **Organized**: Modular structure by numbered sections
 
-### Cambios respecto a `ANOMALY-DETECTION-SETUP.kql`
-- ✅ **Agregado**: Todas las queries de anomalías RTI (7 tipos)
-- ✅ **Agregado**: Dashboards operacionales completos (11 tiles)
-- ✅ **Agregado**: Queries de validación y troubleshooting
-- ✅ **Mejorado**: Documentación inline en cada sección
-
----
-
-## 🎯 Próximos Pasos Recomendados
-
-1. **Optimización de Thresholds**: Después de 1 semana, ajustar los thresholds según tu baseline real
-2. **Tuning del ML**: Ajustar la sensibilidad del modelo de anomalías (1.0 - 2.0)
-3. **Alertas Avanzadas**: Integrar con Microsoft Sentinel para SOAR
-4. **Dashboards Custom**: Crear vistas específicas por equipo (Security, DBA, DevOps)
-5. **Retención de Datos**: Configurar políticas de retención para las tablas de métricas (por defecto 90 días)
+### Changes vs `ANOMALY-DETECTION-SETUP.kql`
+- ✅ **Added**: All RTI anomaly queries (7 types)
+- ✅ **Added**: Complete operational dashboards (11 tiles)
+- ✅ **Added**: Validation and troubleshooting queries
+- ✅ **Improved**: Inline documentation for each section
 
 ---
 
-## 📧 Soporte
+## 🎯 Recommended Next Steps
 
-Para preguntas o problemas:
-1. Revisar la **SECCIÓN 6: Troubleshooting**
-2. Verificar la **SECCIÓN 5: Queries de Validación**
-3. Consultar logs de ingesta: `.show ingestion failures`
+1. **Threshold Optimization**: After 1 week, adjust thresholds based on your real baseline
+2. **ML Tuning**: Adjust anomaly model sensitivity (1.0 - 2.0)
+3. **Advanced Alerts**: Integrate with Microsoft Sentinel for SOAR
+4. **Custom Dashboards**: Create team-specific views (Security, DBA, DevOps)
+5. **Data Retention**: Configure retention policies for metrics tables (default 90 days)
 
 ---
 
-**Versión**: 1.0 - Unified Setup  
-**Última actualización**: 2026-01-25  
+## 📧 Support
+
+For questions or issues:
+1. Review **SECTION 6: Troubleshooting**
+2. Check **SECTION 5: Validation Queries**
+3. Consult ingestion logs: `.show ingestion failures`
+
+---
+
+**Version**: 1.0 - Unified Setup  
+**Last updated**: 2026-01-25  
 **Autor**: Anomaly Detection Team

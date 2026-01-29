@@ -1,10 +1,10 @@
 -- ============================================================================
--- TEST 7: ANOMALIA 7 - Desviacion de Baseline ML (ML Baseline Deviation)
+-- TEST 7: ANOMALY 7 - ML Baseline Deviation
 -- ============================================================================
--- Requisito: Generar actividad que desvie del baseline ML
--- Estrategia: Ejecutar MUCHAS queries para crear spike de actividad
--- Tiempo de ejecucion: ~2 minutos
--- Resultado esperado en dashboard (5-10 min despues):
+-- Requirement: Generate activity that deviates from ML baseline
+-- Strategy: Execute MANY queries to create activity spike
+-- Execution time: ~2 minutes
+-- Expected dashboard result (5-10 min after):
 --    - AnomalyType: ML Baseline Deviation
 --    - DeviationScore: >1.5 (>2.0 = HIGH, >3.0 = CRITICAL)
 --    - AnomalyDirection: Above Normal
@@ -12,7 +12,7 @@
 
 SELECT current_timestamp as access_time, 'ML SPIKE TEST - START' as test_type;
 
--- RAFAGA 1: Accesos masivos a tablas de negocio (20 queries)
+-- BURST 1: Massive access to business tables (20 queries)
 SELECT * FROM sales.customer LIMIT 1;
 SELECT * FROM sales.salesorderheader LIMIT 1;
 SELECT * FROM sales.salesorderdetail LIMIT 1;
@@ -34,7 +34,7 @@ SELECT * FROM humanresources.shift LIMIT 1;
 SELECT * FROM purchasing.vendor LIMIT 1;
 SELECT * FROM purchasing.purchaseorderheader LIMIT 1;
 
--- RAFAGA 2: Queries de conteo (10 queries mas)
+-- BURST 2: Count queries (10 more)
 SELECT COUNT(*) FROM sales.customer;
 SELECT COUNT(*) FROM sales.salesorderheader;
 SELECT COUNT(*) FROM person.person;
@@ -46,7 +46,7 @@ SELECT COUNT(*) FROM person.address;
 SELECT COUNT(*) FROM production.productinventory;
 SELECT COUNT(*) FROM humanresources.department;
 
--- RAFAGA 3: Queries con agregaciones (10 queries mas)
+-- BURST 3: Queries with aggregations (10 more)
 SELECT MAX(totaldue) FROM sales.salesorderheader;
 SELECT MIN(totaldue) FROM sales.salesorderheader;
 SELECT AVG(listprice) FROM production.product;
@@ -58,7 +58,7 @@ SELECT AVG(standardcost) FROM production.product;
 SELECT SUM(quantity) FROM production.productinventory;
 SELECT COUNT(DISTINCT departmentid) FROM humanresources.department;
 
--- RAFAGA 4: Queries con JOINs (10 queries mas - mas carga)
+-- BURST 4: Queries with JOINs (10 more - more CPU intensive)
 SELECT c.customerid, p.firstname FROM sales.customer c 
     JOIN person.person p ON c.personid = p.businessentityid LIMIT 5;
 SELECT o.salesorderid, c.customerid FROM sales.salesorderheader o 
@@ -87,4 +87,4 @@ SELECT e.businessentityid, p.firstname, p.lastname FROM humanresources.employee 
 
 SELECT current_timestamp as access_time, 'ML SPIKE TEST - END' as test_type;
 
--- TOTAL: 52 queries ejecutadas en rafaga (~1-2 minutos)
+-- TOTAL: 52 queries executed in burst (~1-2 minutes)

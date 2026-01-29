@@ -9,7 +9,7 @@ This file contains the most important queries ready to copy and paste directly i
 ### Main Query: All Anomalies (Top 100)
 ```kql
 // ============================================================================
-// DASHBOARD PRINCIPAL - TODAS LAS ANOMALÍAS
+// MAIN DASHBOARD - ALL ANOMALIES
 // ============================================================================
 
 let suspiciousDataAccess = 

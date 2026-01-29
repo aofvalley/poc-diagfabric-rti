@@ -1,16 +1,16 @@
 // ============================================================================
 // UNIFIED ANOMALY DETECTION - PostgreSQL Real-Time Intelligence
 // ============================================================================
-// Sistema completo de detección de anomalías con ML & patrones de seguridad
-// Versión unificada: Setup + Dashboard RTI + Alertas Avanzadas
+// Complete anomaly detection system with ML & security patterns
+// Unified version: Setup + Dashboard RTI + Advanced Alerts
 // ============================================================================
 
 // ============================================================================
-// SECCIÓN 1: SETUP - CREACIÓN DE INFRAESTRUCTURA
+// SECTION 1: SETUP - INFRASTRUCTURE CREATION
 // ============================================================================
 
 // ----------------------------------------------------------------------------
-// 1.1 Tabla Principal: Métricas de Actividad con Dimensiones Temporales
+// 1.1 Main Table: Activity Metrics with Temporal Dimensions
 // ----------------------------------------------------------------------------
 
 .create table postgres_activity_metrics (
